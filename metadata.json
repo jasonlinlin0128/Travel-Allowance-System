@@ -1,0 +1,5 @@
+{
+  "name": "Travel Allowance System",
+  "description": "A comprehensive travel allowance calculator and application tracking system for remote business trips, integrated with Firebase.",
+  "requestFramePermissions": []
+}
