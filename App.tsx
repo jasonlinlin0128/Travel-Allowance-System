@@ -29,7 +29,7 @@ import {
   Loader2
 } from 'lucide-react';
 
-import { GoogleGenAI, Type } from "@google/generative-ai";
+// Removed direct import of @google/generative-ai to avoid bundling issues on Vercel.
 
 import { auth, db, APP_ID, isDemoMode } from './services/firebase';
 import { PREDEFINED_LOCATIONS, LOCATION_GROUPS, EMPLOYEES } from './constants';
@@ -302,56 +302,30 @@ export default function App() {
       return;
     }
 
-    // Use process.env.API_KEY which is polyfilled by Vite
-    const apiKey = process.env.API_KEY; 
-
-    if (!apiKey) {
-      alert("API Key 未設定，無法使用 AI 估算功能。");
-      return;
-    }
-
     setIsEstimating(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey });
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `User Origin: ${DEFAULT_ORIGIN}. User Destination Input: "${userInput}".
-        Task:
-        1. Identify the specific, official full address for the destination input in Taiwan.
-        2. Estimate the one-way driving time by car (in hours) from the Origin to this Destination.
-        
-        Requirements:
-        - Use Google Search to find the address and travel time.
-        - Return ONLY a JSON object with this schema: { "fullAddress": string, "hours": number }
-        - "hours" should be a number (e.g. 1.5).
-        - If multiple locations match, pick the most likely major business location.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              fullAddress: { type: Type.STRING },
-              hours: { type: Type.NUMBER }
-            }
-          },
-          tools: [{googleSearch: {}}],
-        },
+      const resp = await fetch('/api/ai-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: userInput, origin: DEFAULT_ORIGIN })
       });
 
-      const resultText = response.text;
-      if (resultText) {
-        const result = JSON.parse(resultText);
-        setFormData(prev => ({
-          ...prev,
-          destination: result.fullAddress || prev.destination,
-          oneWayHours: result.hours || prev.oneWayHours
-        }));
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(txt || 'AI estimate failed');
       }
+
+      const result = await resp.json();
+      setFormData(prev => ({
+        ...prev,
+        destination: result.fullAddress || prev.destination,
+        oneWayHours: result.hours || prev.oneWayHours
+      }));
+
     } catch (error) {
       console.error("AI Estimate Error:", error);
-      alert("AI 估算失敗，請稍後再試或手動輸入。");
+      alert("AI 估算失敗，請稍後再試或手動輸入。\n(確保已在 Vercel 設定 GOOGLE_MAPS_API_KEY)");
     } finally {
       setIsEstimating(false);
     }
