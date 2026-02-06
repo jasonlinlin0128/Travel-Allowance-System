@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -29,7 +29,7 @@ import {
   Loader2
 } from 'lucide-react';
 
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/generative-ai";
 
 import { auth, db, APP_ID, isDemoMode } from './services/firebase';
 import { PREDEFINED_LOCATIONS, LOCATION_GROUPS, EMPLOYEES } from './constants';
