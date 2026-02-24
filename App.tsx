@@ -161,6 +161,26 @@ export default function App() {
     return () => unsubscribeSnapshot();
   }, [firebaseUser]);
 
+  // --- Login Suggestions (autocomplete) ---
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const loginSuggestions = useMemo(() => {
+    const trimmed = loginInput.trim();
+    if (!trimmed) return [];
+    return EMPLOYEES.filter(
+      emp => emp.name.includes(trimmed) || emp.id.includes(trimmed)
+    );
+  }, [loginInput]);
+
+  const handleSelectSuggestion = (emp: Employee) => {
+    setLoginInput(emp.name);
+    setShowSuggestions(false);
+    setCurrentUser(emp);
+    localStorage.setItem('travel_app_user', JSON.stringify(emp));
+    setLoginError('');
+    setLoginInput('');
+    setActiveTab('form');
+  };
+
   // --- Login Logic ---
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -397,7 +417,7 @@ export default function App() {
         nights: 0
       }));
       
-      setActiveTab('my_history');
+      // Stay on form tab after submission
       window.scrollTo(0, 0);
     } catch (error) {
       console.error("Error:", error);
@@ -429,14 +449,32 @@ export default function App() {
               <label className="block text-sm font-medium text-slate-700 mb-1">員工編號或姓名</label>
               <div className="relative">
                 <UserCircle className="absolute left-3 top-2.5 w-5 h-5 text-slate-400" />
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   value={loginInput}
-                  onChange={(e) => setLoginInput(e.target.value)}
+                  onChange={(e) => { setLoginInput(e.target.value); setShowSuggestions(true); }}
+                  onFocus={() => setShowSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
                   placeholder="例：7904 或 胡淑惠"
                   className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
                   autoFocus
+                  autoComplete="off"
                 />
+                {showSuggestions && loginSuggestions.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {loginSuggestions.map(emp => (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        onMouseDown={() => handleSelectSuggestion(emp)}
+                        className="w-full text-left px-4 py-2 hover:bg-blue-50 flex justify-between items-center text-sm"
+                      >
+                        <span className="font-medium text-slate-800">{emp.name}</span>
+                        <span className="text-slate-400 text-xs">編號 {emp.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -693,26 +731,36 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
                     <div>
                       <label className="block text-xs font-medium text-blue-800 mb-1">出發時間 (24h)</label>
-                      <input 
+                      <select
                         required
-                        type="time" 
                         name="startTime"
                         value={formData.startTime}
                         onChange={handleInputChange}
-                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
-                      />
+                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
+                      >
+                        {Array.from({ length: 48 }, (_, i) => {
+                          const h = String(Math.floor(i / 2)).padStart(2, '0');
+                          const m = i % 2 === 0 ? '00' : '30';
+                          return <option key={`s-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
+                        })}
+                      </select>
                       <p className="text-xs text-blue-600 mt-1">* 05:00 前(含)出發有加給</p>
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-blue-800 mb-1">返回/到廠時間 (24h)</label>
-                      <input 
+                      <select
                         required
-                        type="time" 
                         name="endTime"
                         value={formData.endTime}
                         onChange={handleInputChange}
-                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
-                      />
+                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
+                      >
+                        {Array.from({ length: 48 }, (_, i) => {
+                          const h = String(Math.floor(i / 2)).padStart(2, '0');
+                          const m = i % 2 === 0 ? '00' : '30';
+                          return <option key={`e-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
+                        })}
+                      </select>
                       <p className="text-xs text-blue-600 mt-1">* 21:00 後抵達有加給</p>
                     </div>
                   </div>
