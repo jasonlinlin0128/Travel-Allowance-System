@@ -14,6 +14,12 @@ export interface Destination {
   oneWayHours: number;
 }
 
+export interface DayEntry {
+  date: string;      // YYYY-MM-DD
+  startTime: string; // HH:MM
+  endTime: string;   // HH:MM
+}
+
 export interface TravelRequest {
   id?: string;
 
@@ -29,6 +35,9 @@ export interface TravelRequest {
   endTime: string;
   passengers: number;
   nights: number;
+
+  // Multi-day entries (for overnight trips)
+  dayEntries?: DayEntry[];
 
   // Multi-destination (new)
   destinations?: Destination[];

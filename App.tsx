@@ -33,7 +33,7 @@ import {
 
 import { auth, db, APP_ID, isDemoMode } from './services/firebase';
 import { PREDEFINED_LOCATIONS, LOCATION_GROUPS, EMPLOYEES } from './constants';
-import { TravelRequest, CalculationResult, Employee, Destination } from './types';
+import { TravelRequest, CalculationResult, Employee, Destination, DayEntry } from './types';
 
 // Use type casting to avoid "no exported member" errors with some TS/Firebase versions
 const { 
@@ -50,6 +50,13 @@ const ADMIN_ID = "10608";
 
 // Default origin for driving time calculation
 const DEFAULT_ORIGIN = "彰化縣北斗鎮四海路二段79號";
+
+// Add N days to a YYYY-MM-DD date string (local time, DST-safe)
+const addDays = (dateStr: string, days: number): string => {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+};
 
 export default function App() {
   // Auth State
@@ -77,6 +84,7 @@ export default function App() {
     startTime: string;
     endTime: string;
     nights: number;
+    dayEntries: DayEntry[];
   }>({
     applicants: [''],
     reason: '',
@@ -86,6 +94,7 @@ export default function App() {
     startTime: '08:00',
     endTime: '17:00',
     nights: 0,
+    dayEntries: [],
   });
 
   // Track which destination is focused for location selector / AI estimate
@@ -129,6 +138,20 @@ export default function App() {
       }));
     }
   }, [currentUser]);
+
+  // When base date changes, refresh dates in dayEntries (keep times unchanged)
+  useEffect(() => {
+    setFormData(prev => {
+      if (prev.nights <= 0 || prev.dayEntries.length === 0) return prev;
+      return {
+        ...prev,
+        dayEntries: prev.dayEntries.map((entry, i) => ({
+          ...entry,
+          date: addDays(prev.date, i),
+        })),
+      };
+    });
+  }, [formData.date]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Fetch Data ---
   useEffect(() => {
@@ -245,25 +268,32 @@ export default function App() {
     const headcount = Math.max(1, formData.applicants.length);
 
     // 1. Fatigue Calculation
-    const [startH, startM] = formData.startTime.split(':').map(Number);
-    const [endH, endM] = formData.endTime.split(':').map(Number);
-    
-    const startDec = startH + startM / 60;
-    const endDec = endH + endM / 60;
+    const calcDayFatigue = (startTime: string, endTime: string) => {
+      const [startH, startM] = startTime.split(':').map(Number);
+      const [endH, endM] = endTime.split(':').map(Number);
+      const startDec = startH + startM / 60;
+      const endDec = endH + endM / 60;
+      let fatigue = 0;
+      // Rule A: Early Start (<= 05:00)
+      if (startDec <= 5) {
+        fatigue += Math.floor((8 - startDec) * 2) / 2 * 200;
+      }
+      // Rule B: Late Arrival (> 21:00)
+      if (endDec > 21) {
+        isLateStartEligible = true;
+        fatigue += Math.floor((endDec - 21) * 2) / 2 * 200;
+      }
+      return fatigue;
+    };
 
-    // Rule A: Early Start (<= 05:00)
-    if (startDec <= 5) {
-      const duration = 8 - startDec;
-      const billableHours = Math.floor(duration * 2) / 2; 
-      singlePersonFatigue += billableHours * 200;
-    }
-
-    // Rule B: Late Arrival (> 21:00)
-    if (endDec > 21) {
-      isLateStartEligible = true;
-      const rawHours = endDec - 21;
-      const billableHours = Math.floor(rawHours * 2) / 2;
-      singlePersonFatigue += billableHours * 200;
+    if (formData.nights > 0 && formData.dayEntries.length > 0) {
+      // Multi-day: sum fatigue from each day's entries
+      for (const entry of formData.dayEntries) {
+        singlePersonFatigue += calcDayFatigue(entry.startTime, entry.endTime);
+      }
+    } else {
+      // Single day
+      singlePersonFatigue = calcDayFatigue(formData.startTime, formData.endTime);
     }
 
     // 2. Travel Allowance (Car) - based on effective one-way hours (max of all destinations)
@@ -298,7 +328,7 @@ export default function App() {
       singleTripAllowance,
     };
 
-  }, [formData.startTime, formData.endTime, formData.effectiveOneWayHours, formData.applicants.length, formData.nights]);
+  }, [formData.startTime, formData.endTime, formData.effectiveOneWayHours, formData.applicants.length, formData.nights, formData.dayEntries]);
 
   // --- Handlers ---
   const handleApplicantChange = (index: number, value: string) => {
@@ -323,6 +353,38 @@ export default function App() {
       ...prev,
       [name]: type === 'number' ? Number(value) : value
     }));
+  };
+
+  const handleDayEntryChange = (index: number, field: 'startTime' | 'endTime', value: string) => {
+    setFormData(prev => {
+      const newEntries = [...prev.dayEntries];
+      newEntries[index] = { ...newEntries[index], [field]: value };
+      return { ...prev, dayEntries: newEntries };
+    });
+  };
+
+  const handleNightsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const nights = Math.max(0, Number(e.target.value));
+    setFormData(prev => {
+      const totalDays = nights + 1;
+      let newEntries: DayEntry[];
+      if (nights === 0) {
+        newEntries = [];
+      } else {
+        newEntries = Array.from({ length: totalDays }, (_, i) => {
+          // Preserve existing entry if it already exists
+          if (prev.dayEntries[i]) {
+            return { ...prev.dayEntries[i], date: addDays(prev.date, i) };
+          }
+          return {
+            date: addDays(prev.date, i),
+            startTime: i === 0 ? prev.startTime : '08:00',
+            endTime: i === totalDays - 1 ? prev.endTime : '17:00',
+          };
+        });
+      }
+      return { ...prev, nights, dayEntries: newEntries };
+    });
   };
 
   // --- Destination Handlers ---
@@ -434,9 +496,14 @@ export default function App() {
         passengers: calculation.headcount,
         reason: formData.reason,
         date: formData.date,
-        startTime: formData.startTime,
-        endTime: formData.endTime,
+        startTime: formData.nights > 0 && formData.dayEntries.length > 0
+          ? formData.dayEntries[0].startTime
+          : formData.startTime,
+        endTime: formData.nights > 0 && formData.dayEntries.length > 0
+          ? formData.dayEntries[formData.dayEntries.length - 1].endTime
+          : formData.endTime,
         nights: formData.nights,
+        dayEntries: formData.nights > 0 ? formData.dayEntries : undefined,
 
         // Multi-destination
         destinations: formData.destinations,
@@ -480,7 +547,8 @@ export default function App() {
         effectiveOneWayHours: 0,
         startTime: '08:00',
         endTime: '17:00',
-        nights: 0
+        nights: 0,
+        dayEntries: [],
       }));
       
       // Stay on form tab after submission
@@ -880,43 +948,7 @@ export default function App() {
                     時間與行程 (津貼計算依據)
                   </h3>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
-                    <div>
-                      <label className="block text-xs font-medium text-blue-800 mb-1">出發時間 (24h)</label>
-                      <select
-                        required
-                        name="startTime"
-                        value={formData.startTime}
-                        onChange={handleInputChange}
-                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
-                      >
-                        {Array.from({ length: 48 }, (_, i) => {
-                          const h = String(Math.floor(i / 2)).padStart(2, '0');
-                          const m = i % 2 === 0 ? '00' : '30';
-                          return <option key={`s-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
-                        })}
-                      </select>
-                      <p className="text-xs text-blue-600 mt-1">* 05:00 前(含)出發有加給</p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-blue-800 mb-1">返回/到廠時間 (24h)</label>
-                      <select
-                        required
-                        name="endTime"
-                        value={formData.endTime}
-                        onChange={handleInputChange}
-                        className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
-                      >
-                        {Array.from({ length: 48 }, (_, i) => {
-                          const h = String(Math.floor(i / 2)).padStart(2, '0');
-                          const m = i % 2 === 0 ? '00' : '30';
-                          return <option key={`e-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
-                        })}
-                      </select>
-                      <p className="text-xs text-blue-600 mt-1">* 21:00 後抵達有加給</p>
-                    </div>
-                  </div>
-
+                  {/* 過夜天數 + 單趟車程 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">單趟車程 (取最遠, 可手動覆蓋)</label>
@@ -947,13 +979,114 @@ export default function App() {
                           type="number"
                           min="0"
                           name="nights"
-                          value={formData.nights}
-                          onChange={handleInputChange}
+                          value={formData.nights === 0 ? '' : formData.nights}
+                          placeholder="0"
+                          onChange={handleNightsChange}
                           className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
                         />
                       </div>
+                      {formData.nights > 0 && (
+                        <p className="text-xs text-indigo-600 mt-1">共 {formData.nights + 1} 天，請分別填寫各天時間</p>
+                      )}
                     </div>
                   </div>
+
+                  {/* 時間輸入：單日 or 多日 */}
+                  {formData.nights > 0 && formData.dayEntries.length > 0 ? (
+                    <div className="space-y-3">
+                      {formData.dayEntries.map((entry, index) => {
+                        const isFirst = index === 0;
+                        const isLast = index === formData.nights;
+                        const dayLabel = isFirst ? '出發日' : isLast ? '返回日' : `第 ${index + 1} 天`;
+                        const [sh, sm] = entry.startTime.split(':').map(Number);
+                        const [eh, em] = entry.endTime.split(':').map(Number);
+                        const startDec = sh + sm / 60;
+                        const endDec = eh + em / 60;
+                        return (
+                          <div key={index} className="bg-indigo-50 p-4 rounded-lg border border-indigo-200">
+                            <p className="text-xs font-bold text-indigo-800 mb-3 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              第 {index + 1} 天（{dayLabel}）— {entry.date}
+                            </p>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs font-medium text-indigo-700 mb-1">出發時間 (24h)</label>
+                                <select
+                                  value={entry.startTime}
+                                  onChange={(e) => handleDayEntryChange(index, 'startTime', e.target.value)}
+                                  className="w-full px-3 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 appearance-none cursor-pointer text-sm"
+                                >
+                                  {Array.from({ length: 48 }, (_, i) => {
+                                    const h = String(Math.floor(i / 2)).padStart(2, '0');
+                                    const m = i % 2 === 0 ? '00' : '30';
+                                    return <option key={i} value={`${h}:${m}`}>{h}:{m}</option>;
+                                  })}
+                                </select>
+                                {startDec <= 5 && (
+                                  <p className="text-xs text-green-600 mt-1">✓ 早出加給 +{formatCurrency(Math.floor((8 - startDec) * 2) / 2 * 200)}/人</p>
+                                )}
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-indigo-700 mb-1">收班時間 (24h)</label>
+                                <select
+                                  value={entry.endTime}
+                                  onChange={(e) => handleDayEntryChange(index, 'endTime', e.target.value)}
+                                  className="w-full px-3 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 appearance-none cursor-pointer text-sm"
+                                >
+                                  {Array.from({ length: 48 }, (_, i) => {
+                                    const h = String(Math.floor(i / 2)).padStart(2, '0');
+                                    const m = i % 2 === 0 ? '00' : '30';
+                                    return <option key={i} value={`${h}:${m}`}>{h}:{m}</option>;
+                                  })}
+                                </select>
+                                {endDec > 21 && (
+                                  <p className="text-xs text-amber-600 mt-1">✓ 晚歸加給 +{formatCurrency(Math.floor((endDec - 21) * 2) / 2 * 200)}/人</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <p className="text-xs text-slate-400">* 05:00 前(含)出發 / 21:00 後抵達 各天分開計算疲勞加給</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
+                      <div>
+                        <label className="block text-xs font-medium text-blue-800 mb-1">出發時間 (24h)</label>
+                        <select
+                          required
+                          name="startTime"
+                          value={formData.startTime}
+                          onChange={handleInputChange}
+                          className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
+                        >
+                          {Array.from({ length: 48 }, (_, i) => {
+                            const h = String(Math.floor(i / 2)).padStart(2, '0');
+                            const m = i % 2 === 0 ? '00' : '30';
+                            return <option key={`s-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
+                          })}
+                        </select>
+                        <p className="text-xs text-blue-600 mt-1">* 05:00 前(含)出發有加給</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-blue-800 mb-1">返回/到廠時間 (24h)</label>
+                        <select
+                          required
+                          name="endTime"
+                          value={formData.endTime}
+                          onChange={handleInputChange}
+                          className="w-full px-4 py-2 border border-blue-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 appearance-none cursor-pointer"
+                        >
+                          {Array.from({ length: 48 }, (_, i) => {
+                            const h = String(Math.floor(i / 2)).padStart(2, '0');
+                            const m = i % 2 === 0 ? '00' : '30';
+                            return <option key={`e-${i}`} value={`${h}:${m}`}>{h}:{m}</option>;
+                          })}
+                        </select>
+                        <p className="text-xs text-blue-600 mt-1">* 21:00 後抵達有加給</p>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="pt-4">
                     <button 
@@ -1010,9 +1143,9 @@ export default function App() {
                       <span>依人頭計算 ({calculation.headcount}人)</span>
                       <span>每人 {formatCurrency(calculation.perPersonFatigue)}</span>
                     </div>
-                    {(calculation.perPersonFatigue > 0 && formData.startTime.startsWith('05:0')) && (
+                    {calculation.perPersonFatigue > 0 && (
                        <div className="text-xs text-green-600 mt-1 bg-green-50 p-1 rounded">
-                         ✓ 已包含 05:00 出發津貼
+                         ✓ 已包含疲勞加給{formData.nights > 0 ? `（共 ${formData.nights + 1} 天合計）` : ''}
                        </div>
                     )}
                   </div>
