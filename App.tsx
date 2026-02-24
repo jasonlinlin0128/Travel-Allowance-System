@@ -263,14 +263,16 @@ export default function App() {
       travelTotal: carTotalAllowance,
       overnightTotal,
       grandTotal: fatigueTotal + carTotalAllowance + overnightTotal,
-      
+
       perPersonFatigue: singlePersonFatigue,
       perPersonOvernight: singlePersonOvernight,
       perPersonTravel: carTotalAllowance / headcount,
-      
+
       lateStart: isLateStartEligible,
       rest: restTime,
-      headcount
+      headcount,
+      travelUnits: units,
+      singleTripAllowance,
     };
 
   }, [formData.startTime, formData.endTime, formData.oneWayHours, formData.applicants.length, formData.nights]);
@@ -870,9 +872,13 @@ export default function App() {
                       <div className="text-slate-600 text-sm font-medium">車程加給 <span className="text-xs text-slate-400">(來回)</span></div>
                       <div className="font-mono font-bold text-slate-800">{formatCurrency(calculation.travelTotal)}</div>
                     </div>
-                    <div className="text-xs text-slate-400 flex justify-between">
-                      <span>總額均分 ({calculation.headcount}人)</span>
-                      <span className="text-blue-600 font-medium">每人 {formatCurrency(calculation.perPersonTravel)}</span>
+                    <div className="text-xs text-slate-400 space-y-0.5">
+                      <div>單程 {formData.oneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
+                      <div>來回: {formatCurrency(calculation.singleTripAllowance)} × 2 = {formatCurrency(calculation.travelTotal)}</div>
+                      <div className="flex justify-between">
+                        <span>總額均分 ({calculation.headcount}人)</span>
+                        <span className="text-blue-600 font-medium">每人 {formatCurrency(calculation.perPersonTravel)}</span>
+                      </div>
                     </div>
                   </div>
 

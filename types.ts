@@ -54,4 +54,6 @@ export interface CalculationResult {
   lateStart: boolean;
   rest: number;
   headcount: number;
+  travelUnits: number;
+  singleTripAllowance: number;
 }
