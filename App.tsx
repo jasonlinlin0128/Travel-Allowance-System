@@ -33,7 +33,7 @@ import {
 
 import { auth, db, APP_ID, isDemoMode } from './services/firebase';
 import { PREDEFINED_LOCATIONS, LOCATION_GROUPS, EMPLOYEES } from './constants';
-import { TravelRequest, CalculationResult, Employee } from './types';
+import { TravelRequest, CalculationResult, Employee, Destination } from './types';
 
 // Use type casting to avoid "no exported member" errors with some TS/Firebase versions
 const { 
@@ -71,22 +71,25 @@ export default function App() {
   const [formData, setFormData] = useState<{
     applicants: string[];
     reason: string;
-    destination: string;
+    destinations: Destination[];
+    effectiveOneWayHours: number;
     date: string;
     startTime: string;
     endTime: string;
-    oneWayHours: number;
     nights: number;
   }>({
     applicants: [''],
     reason: '',
-    destination: '',
+    destinations: [{ address: '', oneWayHours: 0 }],
+    effectiveOneWayHours: 0,
     date: new Date().toISOString().split('T')[0],
     startTime: '08:00',
     endTime: '17:00',
-    oneWayHours: 0,
     nights: 0,
   });
+
+  // Track which destination is focused for location selector / AI estimate
+  const [focusedDestinationIndex, setFocusedDestinationIndex] = useState(0);
 
   // --- Initialize & Auth ---
   useEffect(() => {
@@ -161,6 +164,26 @@ export default function App() {
     return () => unsubscribeSnapshot();
   }, [firebaseUser]);
 
+  // --- Applicant Autocomplete ---
+  const [activeApplicantIndex, setActiveApplicantIndex] = useState<number | null>(null);
+  const [showApplicantSuggestions, setShowApplicantSuggestions] = useState(false);
+  const applicantSuggestions = useMemo(() => {
+    if (activeApplicantIndex === null) return [];
+    const trimmed = formData.applicants[activeApplicantIndex]?.trim() || '';
+    if (!trimmed) return [];
+    return EMPLOYEES.filter(
+      emp => emp.name.includes(trimmed) || emp.id.includes(trimmed)
+    );
+  }, [formData.applicants, activeApplicantIndex]);
+
+  const handleSelectApplicantSuggestion = (emp: Employee, index: number) => {
+    const newApplicants = [...formData.applicants];
+    newApplicants[index] = emp.name;
+    setFormData(prev => ({ ...prev, applicants: newApplicants }));
+    setShowApplicantSuggestions(false);
+    setActiveApplicantIndex(null);
+  };
+
   // --- Login Suggestions (autocomplete) ---
   const [showSuggestions, setShowSuggestions] = useState(false);
   const loginSuggestions = useMemo(() => {
@@ -206,7 +229,7 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem('travel_app_user');
-    setFormData(prev => ({ ...prev, applicants: [''] }));
+    setFormData(prev => ({ ...prev, applicants: [''], destinations: [{ address: '', oneWayHours: 0 }], effectiveOneWayHours: 0 }));
     setActiveTab('form'); // Reset tab to avoid staying on admin page
   };
 
@@ -243,12 +266,12 @@ export default function App() {
       singlePersonFatigue += billableHours * 200;
     }
 
-    // 2. Travel Allowance (Car)
-    const oneWayHours = formData.oneWayHours;
+    // 2. Travel Allowance (Car) - based on effective one-way hours (max of all destinations)
+    const oneWayHours = formData.effectiveOneWayHours;
     const units = Math.floor(oneWayHours / 1.5);
     const singleTripAllowance = units * 30;
-    carTotalAllowance = singleTripAllowance * 2; 
-    
+    carTotalAllowance = singleTripAllowance * 2;
+
     // 15 mins rest per 1.5 hours driving
     restTime = Math.floor(oneWayHours / 1.5) * 15;
 
@@ -275,7 +298,7 @@ export default function App() {
       singleTripAllowance,
     };
 
-  }, [formData.startTime, formData.endTime, formData.oneWayHours, formData.applicants.length, formData.nights]);
+  }, [formData.startTime, formData.endTime, formData.effectiveOneWayHours, formData.applicants.length, formData.nights]);
 
   // --- Handlers ---
   const handleApplicantChange = (index: number, value: string) => {
@@ -302,23 +325,54 @@ export default function App() {
     }));
   };
 
+  // --- Destination Handlers ---
+  const handleDestinationChange = (index: number, field: keyof Destination, value: string | number) => {
+    setFormData(prev => {
+      const newDests = [...prev.destinations];
+      newDests[index] = { ...newDests[index], [field]: value };
+      const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+      return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
+    });
+  };
+
+  const addDestination = () => {
+    setFormData(prev => ({
+      ...prev,
+      destinations: [...prev.destinations, { address: '', oneWayHours: 0 }],
+    }));
+    setFocusedDestinationIndex(formData.destinations.length);
+  };
+
+  const removeDestination = (index: number) => {
+    if (formData.destinations.length <= 1) return;
+    setFormData(prev => {
+      const newDests = prev.destinations.filter((_, i) => i !== index);
+      const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+      return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
+    });
+    setFocusedDestinationIndex(0);
+  };
+
   const handleLocationSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedName = e.target.value;
     if (!selectedName || selectedName === 'custom') return;
 
     const location = PREDEFINED_LOCATIONS.find(loc => loc.name === selectedName);
     if (location) {
-      setFormData(prev => ({
-        ...prev,
-        destination: location.name,
-        oneWayHours: location.hours
-      }));
+      setFormData(prev => {
+        const newDests = [...prev.destinations];
+        newDests[focusedDestinationIndex] = { address: location.name, oneWayHours: location.hours };
+        const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+        return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
+      });
     }
   };
 
   // --- AI Estimation Logic ---
-  const handleAIEstimate = async () => {
-    const userInput = formData.destination;
+  const handleAIEstimate = async (overrideIndex?: number) => {
+    const idx = overrideIndex ?? focusedDestinationIndex;
+    const dest = formData.destinations[idx];
+    const userInput = dest?.address;
     if (!userInput || userInput.trim() === '') {
       alert("請先輸入大概的地點名稱（例如：台積電南科）");
       return;
@@ -339,11 +393,15 @@ export default function App() {
       }
 
       const result = await resp.json();
-      setFormData(prev => ({
-        ...prev,
-        destination: result.fullAddress || prev.destination,
-        oneWayHours: result.hours || prev.oneWayHours
-      }));
+      setFormData(prev => {
+        const newDests = [...prev.destinations];
+        newDests[idx] = {
+          address: result.fullAddress || dest.address,
+          oneWayHours: result.hours || dest.oneWayHours
+        };
+        const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+        return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
+      });
 
     } catch (error) {
       console.error("AI Estimate Error:", error);
@@ -375,12 +433,18 @@ export default function App() {
         applicants: formData.applicants,
         passengers: calculation.headcount,
         reason: formData.reason,
-        destination: formData.destination,
         date: formData.date,
         startTime: formData.startTime,
         endTime: formData.endTime,
-        oneWayHours: formData.oneWayHours,
         nights: formData.nights,
+
+        // Multi-destination
+        destinations: formData.destinations,
+        effectiveOneWayHours: formData.effectiveOneWayHours,
+
+        // Backward compat legacy fields
+        destination: formData.destinations.map(d => d.address).join(' → '),
+        oneWayHours: formData.effectiveOneWayHours,
         
         fatigueAllowanceTotal: calculation.fatigueTotal,
         travelAllowanceTotal: calculation.travelTotal,
@@ -410,12 +474,12 @@ export default function App() {
       
       setFormData(prev => ({
         ...prev,
-        applicants: [currentUser.name], // Reset to just current user
+        applicants: [currentUser.name],
         reason: '',
-        destination: '',
+        destinations: [{ address: '', oneWayHours: 0 }],
+        effectiveOneWayHours: 0,
         startTime: '08:00',
         endTime: '17:00',
-        oneWayHours: 0,
         nights: 0
       }));
       
@@ -431,6 +495,26 @@ export default function App() {
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', minimumFractionDigits: 0 }).format(val);
+  };
+
+  const formatTimestamp = (ts: any): string => {
+    if (!ts) return '-';
+    let date: Date;
+    if (typeof ts === 'string') {
+      date = new Date(ts);
+    } else if (ts.toDate) {
+      date = ts.toDate();
+    } else if (ts.seconds) {
+      date = new Date(ts.seconds * 1000);
+    } else {
+      return '-';
+    }
+    const y = date.getFullYear();
+    const mo = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const h = String(date.getHours()).padStart(2, '0');
+    const mi = String(date.getMinutes()).padStart(2, '0');
+    return `${y}/${mo}/${d} ${h}:${mi}`;
   };
 
   // --- Render: Login Screen ---
@@ -504,7 +588,10 @@ export default function App() {
   }
 
   // --- Render: Main App ---
-  const myHistory = history.filter(item => item.submitterId === currentUser.id);
+  const myHistory = history.filter(item =>
+    item.submitterId === currentUser.id ||
+    item.applicants?.includes(currentUser.name)
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
@@ -613,17 +700,42 @@ export default function App() {
                         <div key={index} className="flex gap-2">
                           <div className="relative flex-1">
                             <User className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                            <input 
+                            <input
                               required
-                              type="text" 
+                              type="text"
                               value={name}
-                              onChange={(e) => handleApplicantChange(index, e.target.value)}
+                              onChange={(e) => {
+                                handleApplicantChange(index, e.target.value);
+                                setActiveApplicantIndex(index);
+                                setShowApplicantSuggestions(true);
+                              }}
+                              onFocus={() => {
+                                setActiveApplicantIndex(index);
+                                setShowApplicantSuggestions(true);
+                              }}
+                              onBlur={() => setTimeout(() => setShowApplicantSuggestions(false), 200)}
                               placeholder={`出差人員 ${index + 1}`}
                               className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
+                              autoComplete="off"
                             />
+                            {showApplicantSuggestions && activeApplicantIndex === index && applicantSuggestions.length > 0 && (
+                              <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                                {applicantSuggestions.map(emp => (
+                                  <button
+                                    key={emp.id}
+                                    type="button"
+                                    onMouseDown={() => handleSelectApplicantSuggestion(emp, index)}
+                                    className="w-full text-left px-4 py-2 hover:bg-blue-50 flex justify-between items-center text-sm"
+                                  >
+                                    <span className="font-medium text-slate-800">{emp.name}</span>
+                                    <span className="text-slate-400 text-xs">編號 {emp.id}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                           {formData.applicants.length > 1 && (
-                            <button 
+                            <button
                               type="button"
                               onClick={() => removeApplicant(index)}
                               className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
@@ -637,74 +749,112 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">出差日期</label>
-                      <input 
-                        required
-                        type="date" 
-                        name="date"
-                        value={formData.date}
-                        onChange={handleInputChange}
-                        className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">出差地址</label>
-                      
-                      {/* Location Select */}
-                      <div className="mb-2 relative">
-                         <MapIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
-                         <select
-                           onChange={handleLocationSelect}
-                           className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-white rounded-lg text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer"
-                           defaultValue=""
-                         >
-                           <option value="" disabled>快速帶入常用地點...</option>
-                           {Object.keys(LOCATION_GROUPS).map(region => (
-                             <optgroup key={region} label={region}>
-                               {LOCATION_GROUPS[region].map(loc => (
-                                 <option key={loc.name} value={loc.name}>
-                                   {loc.name} ({loc.hours}H)
-                                 </option>
-                               ))}
-                             </optgroup>
-                           ))}
-                           <option value="custom">其他地點 (手動輸入)</option>
-                         </select>
-                         <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
-                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                         </div>
-                      </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">出差日期</label>
+                    <input
+                      required
+                      type="date"
+                      name="date"
+                      value={formData.date}
+                      onChange={handleInputChange}
+                      className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
+                    />
+                  </div>
 
-                      <div className="relative">
-                        <MapPin className="absolute left-3 top-2.5 w-5 h-5 text-slate-400" />
-                        <div className="relative">
-                          <input 
-                            required
-                            type="text" 
-                            name="destination"
-                            value={formData.destination}
-                            onChange={handleInputChange}
-                            placeholder="輸入地點後點擊右側 AI 估算..."
-                            className="w-full pl-10 pr-28 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleAIEstimate}
-                            disabled={isEstimating}
-                            className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors border border-indigo-200"
-                            title="使用 AI 搜尋完整地址並估算車程 (以台中為起點)"
-                          >
-                            {isEstimating ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Sparkles className="w-3.5 h-3.5" />
-                            )}
-                            AI 估算
-                          </button>
-                        </div>
+                  {/* Multi-Destination Section */}
+                  <div className="bg-green-50/50 p-4 rounded-lg border border-green-100">
+                    <label className="block text-sm font-medium text-slate-700 mb-2 flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <MapPin className="w-4 h-4 text-green-600" />
+                        出差地點 ({formData.destinations.length} 個目的地)
+                      </span>
+                      <button type="button" onClick={addDestination}
+                        className="text-xs bg-green-100 text-green-700 hover:bg-green-200 px-3 py-1.5 rounded-md flex items-center gap-1 transition-colors font-medium">
+                        <Plus className="w-3 h-3" /> 新增地點
+                      </button>
+                    </label>
+
+                    {/* Shared location quick-select */}
+                    <div className="mb-3 relative">
+                      <MapIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                      <select
+                        onChange={handleLocationSelect}
+                        className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-white rounded-lg text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer"
+                        defaultValue=""
+                      >
+                        <option value="" disabled>快速帶入常用地點 → 目的地 {focusedDestinationIndex + 1}...</option>
+                        {Object.keys(LOCATION_GROUPS).map(region => (
+                          <optgroup key={region} label={region}>
+                            {LOCATION_GROUPS[region].map(loc => (
+                              <option key={loc.name} value={loc.name}>
+                                {loc.name} ({loc.hours}H)
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                        <option value="custom">其他地點 (手動輸入)</option>
+                      </select>
+                      <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
                       </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {formData.destinations.map((dest, index) => (
+                        <div key={index} className="bg-white p-3 rounded-lg border border-green-200">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded">目的地 {index + 1}</span>
+                            {dest.oneWayHours > 0 && (
+                              <span className="text-xs text-slate-400">單程 {dest.oneWayHours}H</span>
+                            )}
+                            {formData.destinations.length > 1 && (
+                              <button type="button" onClick={() => removeDestination(index)}
+                                className="ml-auto p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <div className="relative flex-1">
+                              <MapPin className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                              <input
+                                required
+                                type="text"
+                                value={dest.address}
+                                onFocus={() => setFocusedDestinationIndex(index)}
+                                onChange={(e) => handleDestinationChange(index, 'address', e.target.value)}
+                                placeholder="地址或地點名稱"
+                                className="w-full pl-10 pr-28 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900 text-sm"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => { setFocusedDestinationIndex(index); handleAIEstimate(index); }}
+                                disabled={isEstimating}
+                                className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors border border-indigo-200"
+                                title="使用 AI 估算車程"
+                              >
+                                {isEstimating && focusedDestinationIndex === index ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                )}
+                                AI
+                              </button>
+                            </div>
+                            <div className="w-20">
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                value={dest.oneWayHours || ''}
+                                onChange={(e) => handleDestinationChange(index, 'oneWayHours', Number(e.target.value))}
+                                placeholder="時數"
+                                className="w-full px-2 py-2 border border-slate-300 rounded-lg text-center text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
@@ -769,31 +919,32 @@ export default function App() {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">單趟車程 (Google Maps)</label>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">單趟車程 (取最遠, 可手動覆蓋)</label>
                       <div className="relative">
-                        <input 
+                        <input
                           required
-                          type="number" 
+                          type="number"
                           step="0.1"
                           min="0"
-                          name="oneWayHours"
-                          value={formData.oneWayHours || ''}
-                          onChange={handleInputChange}
+                          value={formData.effectiveOneWayHours || ''}
+                          onChange={(e) => setFormData(prev => ({ ...prev, effectiveOneWayHours: Number(e.target.value) }))}
                           placeholder="小時"
                           className="w-full pr-12 pl-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white text-slate-900"
                         />
                         <span className="absolute right-3 top-2 text-slate-500 text-sm">小時</span>
                       </div>
-                      <p className="text-xs text-slate-500 mt-1">選擇地點後自動帶入，每1.5小時補助$30</p>
+                      <p className="text-xs text-slate-500 mt-1">
+                        自動取最遠: {Math.max(...formData.destinations.map(d => d.oneWayHours), 0)}H，每1.5小時補助$30
+                      </p>
                     </div>
 
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">過夜天數</label>
                       <div className="relative">
                         <Moon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                        <input 
+                        <input
                           required
-                          type="number" 
+                          type="number"
                           min="0"
                           name="nights"
                           value={formData.nights}
@@ -873,7 +1024,7 @@ export default function App() {
                       <div className="font-mono font-bold text-slate-800">{formatCurrency(calculation.travelTotal)}</div>
                     </div>
                     <div className="text-xs text-slate-400 space-y-0.5">
-                      <div>單程 {formData.oneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
+                      <div>單程 {formData.effectiveOneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
                       <div>來回: {formatCurrency(calculation.singleTripAllowance)} × 2 = {formatCurrency(calculation.travelTotal)}</div>
                       <div className="flex justify-between">
                         <span>總額均分 ({calculation.headcount}人)</span>
@@ -938,43 +1089,60 @@ export default function App() {
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
-                      <th className="px-4 py-3 whitespace-nowrap">日期</th>
+                      <th className="px-4 py-3 whitespace-nowrap">提交時間</th>
+                      <th className="px-4 py-3 whitespace-nowrap">出差日期</th>
                       <th className="px-4 py-3 whitespace-nowrap">出差人員</th>
                       <th className="px-4 py-3 whitespace-nowrap">地點</th>
                       <th className="px-4 py-3 text-right whitespace-nowrap">總金額</th>
-                      <th className="px-4 py-3 text-center whitespace-nowrap">狀態</th>
+                      <th className="px-4 py-3 text-center whitespace-nowrap">身份</th>
                     </tr>
                   </thead>
                   <tbody>
                     {myHistory.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                        <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
                           尚無申請資料
                         </td>
                       </tr>
                     ) : (
-                      myHistory.map((item) => (
-                        <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
-                          <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-slate-800">
-                              {item.applicants?.join(', ') || 'N/A'}
-                            </div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium">{item.destination}</div>
-                            <div className="text-xs text-slate-400">{item.reason}</div>
-                          </td>
-                          <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
-                            {formatCurrency(item.grandTotal)}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <span className="inline-block px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full">
-                              已提交
-                            </span>
-                          </td>
-                        </tr>
-                      ))
+                      myHistory.map((item) => {
+                        const isSubmitter = item.submitterId === currentUser.id;
+                        return (
+                          <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
+                            <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
+                              {formatTimestamp(item.timestamp)}
+                            </td>
+                            <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-slate-800">
+                                {item.applicants?.join(', ') || 'N/A'}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="font-medium">
+                                {item.destinations
+                                  ? item.destinations.map((d: any) => d.address).join(' → ')
+                                  : item.destination}
+                              </div>
+                              <div className="text-xs text-slate-400">{item.reason}</div>
+                            </td>
+                            <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
+                              {formatCurrency(item.grandTotal)}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {isSubmitter ? (
+                                <span className="inline-block px-2 py-1 text-xs font-semibold text-green-700 bg-green-100 rounded-full">
+                                  我提交的
+                                </span>
+                              ) : (
+                                <span className="inline-block px-2 py-1 text-xs font-semibold text-blue-700 bg-blue-100 rounded-full">
+                                  參與出差
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -1004,8 +1172,9 @@ export default function App() {
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
+                      <th className="px-4 py-3 whitespace-nowrap">提交時間</th>
                       <th className="px-4 py-3 whitespace-nowrap">提交人</th>
-                      <th className="px-4 py-3 whitespace-nowrap">日期</th>
+                      <th className="px-4 py-3 whitespace-nowrap">出差日期</th>
                       <th className="px-4 py-3 whitespace-nowrap">出差人員</th>
                       <th className="px-4 py-3 whitespace-nowrap">地點</th>
                       <th className="px-4 py-3 text-right whitespace-nowrap">疲勞</th>
@@ -1018,13 +1187,16 @@ export default function App() {
                   <tbody>
                     {history.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="px-4 py-8 text-center text-slate-400">
+                        <td colSpan={10} className="px-4 py-8 text-center text-slate-400">
                           目前尚無申請資料
                         </td>
                       </tr>
                     ) : (
                       history.map((item) => (
                         <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
+                          <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
+                            {formatTimestamp(item.timestamp)}
+                          </td>
                           <td className="px-4 py-3 whitespace-nowrap">
                              <div className="font-medium text-slate-900">{item.submitterName || '未知'}</div>
                              <div className="text-xs text-slate-400">{item.submitterId}</div>
@@ -1037,7 +1209,11 @@ export default function App() {
                             <div className="text-xs text-slate-400">共 {item.passengers} 人</div>
                           </td>
                           <td className="px-4 py-3">
-                            <div className="font-medium">{item.destination}</div>
+                            <div className="font-medium">
+                              {item.destinations
+                                ? item.destinations.map((d: any) => d.address).join(' → ')
+                                : item.destination}
+                            </div>
                             <div className="text-xs text-slate-400">{item.reason}</div>
                           </td>
                           <td className="px-4 py-3 text-right font-mono">

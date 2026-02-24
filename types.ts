@@ -9,9 +9,14 @@ export interface Employee {
   name: string;
 }
 
+export interface Destination {
+  address: string;
+  oneWayHours: number;
+}
+
 export interface TravelRequest {
   id?: string;
-  
+
   // Submitter Info (Logged in user)
   submitterId: string;
   submitterName: string;
@@ -19,13 +24,19 @@ export interface TravelRequest {
   userId: string; // Firebase Auth UID (keep for backend security rules if needed)
   applicants: string[];
   reason: string;
-  destination: string;
   date: string;
   startTime: string;
   endTime: string;
-  oneWayHours: number;
   passengers: number;
   nights: number;
+
+  // Multi-destination (new)
+  destinations?: Destination[];
+  effectiveOneWayHours?: number;
+
+  // Legacy single destination (backward compat)
+  destination?: string;
+  oneWayHours?: number;
 
   // Calculated Results
   fatigueAllowanceTotal: number;
