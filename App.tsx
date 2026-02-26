@@ -26,7 +26,9 @@ import {
   ShieldCheck,
   UserCircle,
   Sparkles,
-  Loader2
+  Loader2,
+  Download,
+  Calendar
 } from 'lucide-react';
 
 // Removed direct import of @google/generative-ai to avoid bundling issues on Vercel.
@@ -73,6 +75,12 @@ export default function App() {
 
   // AI State
   const [isEstimating, setIsEstimating] = useState(false);
+
+  // Export State
+  const [exportMonth, setExportMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
 
   // Form State
   const [formData, setFormData] = useState<{
@@ -583,6 +591,149 @@ export default function App() {
     const h = String(date.getHours()).padStart(2, '0');
     const mi = String(date.getMinutes()).padStart(2, '0');
     return `${y}/${mo}/${d} ${h}:${mi}`;
+  };
+
+  // --- Download Monthly CSV ---
+  const downloadMonthlyCSV = () => {
+    const [yearStr, monthStr] = exportMonth.split('-');
+    const year = parseInt(yearStr);
+    const month = parseInt(monthStr);
+
+    // Filter records for the selected month
+    const monthRecords = history.filter(item => {
+      if (!item.date) return false;
+      const [y, m] = item.date.split('-').map(Number);
+      return y === year && m === month;
+    });
+
+    if (monthRecords.length === 0) {
+      alert('該月份無出差紀錄');
+      return;
+    }
+
+    // Build per-employee-per-date data
+    const dateMap: Record<string, Record<string, { fatigue: number; travel: number; overnight: number }>> = {};
+    const employeeSet = new Set<string>();
+
+    for (const record of monthRecords) {
+      const dateKey = record.date;
+      if (!dateMap[dateKey]) dateMap[dateKey] = {};
+
+      const applicants = record.applicants || [];
+      const headcount = record.passengers || applicants.length || 1;
+      const perFatigue = record.perPersonFatigue ?? (record.fatigueAllowanceTotal / headcount);
+      const perTravel = record.perPersonTravel ?? (record.travelAllowanceTotal / headcount);
+      const perOvernight = record.perPersonOvernight ?? (record.overnightAllowanceTotal / headcount);
+
+      for (const name of applicants) {
+        employeeSet.add(name);
+        if (!dateMap[dateKey][name]) {
+          dateMap[dateKey][name] = { fatigue: 0, travel: 0, overnight: 0 };
+        }
+        dateMap[dateKey][name].fatigue += perFatigue;
+        dateMap[dateKey][name].travel += perTravel;
+        dateMap[dateKey][name].overnight += perOvernight;
+      }
+    }
+
+    const employees = Array.from(employeeSet).sort();
+    const dates = Object.keys(dateMap).sort();
+
+    // Build CSV rows
+    const rows: string[][] = [];
+
+    // Row 1: Employee names header (each spans 3 columns)
+    const header1 = ['日期'];
+    for (const emp of employees) {
+      header1.push(emp, '', '');
+    }
+    header1.push('當日合計');
+    rows.push(header1);
+
+    // Row 2: Sub-column headers
+    const header2 = [''];
+    for (let i = 0; i < employees.length; i++) {
+      header2.push('疲勞', '車程', '跨日');
+    }
+    header2.push('');
+    rows.push(header2);
+
+    // Employee totals accumulator
+    const empTotals: Record<string, { fatigue: number; travel: number; overnight: number }> = {};
+    for (const emp of employees) {
+      empTotals[emp] = { fatigue: 0, travel: 0, overnight: 0 };
+    }
+    let grandTotal = 0;
+
+    // Data rows
+    for (const dateKey of dates) {
+      const [, m, d] = dateKey.split('-').map(Number);
+      const dateLabel = `${m}/${d}`;
+      const row = [dateLabel];
+      let dayTotal = 0;
+
+      for (const emp of employees) {
+        const data = dateMap[dateKey][emp];
+        if (data) {
+          row.push(
+            data.fatigue ? String(Math.round(data.fatigue)) : '',
+            data.travel ? String(Math.round(data.travel)) : '',
+            data.overnight ? String(Math.round(data.overnight)) : ''
+          );
+          const personDay = data.fatigue + data.travel + data.overnight;
+          dayTotal += personDay;
+          empTotals[emp].fatigue += data.fatigue;
+          empTotals[emp].travel += data.travel;
+          empTotals[emp].overnight += data.overnight;
+        } else {
+          row.push('', '', '');
+        }
+      }
+      row.push(dayTotal ? String(Math.round(dayTotal)) : '');
+      grandTotal += dayTotal;
+      rows.push(row);
+    }
+
+    // Totals row
+    const totalRow = ['合計'];
+    for (const emp of employees) {
+      const t = empTotals[emp];
+      totalRow.push(
+        t.fatigue ? String(Math.round(t.fatigue)) : '',
+        t.travel ? String(Math.round(t.travel)) : '',
+        t.overnight ? String(Math.round(t.overnight)) : ''
+      );
+    }
+    totalRow.push(String(Math.round(grandTotal)));
+    rows.push(totalRow);
+
+    // Empty row + Grand total row
+    const colCount = header1.length;
+    rows.push(new Array(colCount).fill(''));
+    const grandRow = new Array(colCount).fill('');
+    grandRow[0] = '總計';
+    grandRow[colCount - 1] = String(Math.round(grandTotal));
+    rows.push(grandRow);
+
+    // Generate CSV with BOM for Excel
+    const csvContent = '\uFEFF' + rows.map(row =>
+      row.map(cell => {
+        if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {
+          return `"${cell.replace(/"/g, '""')}"`;
+        }
+        return cell;
+      }).join(',')
+    ).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `出差津貼總表_${year}年${month}月.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // --- Render: Login Screen ---
@@ -1287,11 +1438,31 @@ export default function App() {
         {activeTab === 'admin' && currentUser.id === ADMIN_ID && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="flex justify-between items-center mb-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
                 <div>
                   <h2 className="text-xl font-bold text-slate-800">出差津貼彙總表</h2>
                   <p className="text-sm text-slate-500">供管理部 (小井) 月結使用</p>
                 </div>
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-slate-400" />
+                    <input
+                      type="month"
+                      value={exportMonth}
+                      onChange={e => setExportMonth(e.target.value)}
+                      className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+                  <button
+                    onClick={downloadMonthlyCSV}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                  >
+                    <Download className="w-4 h-4" />
+                    下載月報 CSV
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end mb-4">
                 <div className="text-right">
                   <div className="text-sm text-slate-500">本期累積申請金額</div>
                   <div className="text-2xl font-bold text-blue-600">
