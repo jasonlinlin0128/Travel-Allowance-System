@@ -2,7 +2,7 @@
 // Expects POST JSON body: { input: string (destination), origin?: string }
 // Requires environment variable: GOOGLE_MAPS_API_KEY
 
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -61,4 +61,4 @@ module.exports = async (req, res) => {
     console.error('ai-estimate error:', err);
     return res.status(500).json({ error: 'Internal server error', detail: String(err) });
   }
-};
+}
