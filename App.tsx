@@ -975,7 +975,6 @@ export default function App() {
                       <div className="relative">
                         <Moon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                         <input
-                          required
                           type="number"
                           min="0"
                           name="nights"
