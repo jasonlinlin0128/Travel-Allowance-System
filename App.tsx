@@ -33,18 +33,22 @@ import {
 
 // Removed direct import of @google/generative-ai to avoid bundling issues on Vercel.
 
+import * as XLSX from 'xlsx';
+
 import { auth, db, APP_ID, isDemoMode } from './services/firebase';
 import { PREDEFINED_LOCATIONS, LOCATION_GROUPS, EMPLOYEES } from './constants';
 import { TravelRequest, CalculationResult, Employee, Destination, DayEntry } from './types';
 
 // Use type casting to avoid "no exported member" errors with some TS/Firebase versions
-const { 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  serverTimestamp
+const {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
+  serverTimestamp,
+  deleteDoc,
+  doc
 } = firestore as any;
 
 // Define the Admin ID explicitly
@@ -593,8 +597,8 @@ export default function App() {
     return `${y}/${mo}/${d} ${h}:${mi}`;
   };
 
-  // --- Download Monthly CSV ---
-  const downloadMonthlyCSV = () => {
+  // --- Download Monthly Excel ---
+  const downloadMonthlyExcel = () => {
     const [yearStr, monthStr] = exportMonth.split('-');
     const year = parseInt(yearStr);
     const month = parseInt(monthStr);
@@ -639,24 +643,24 @@ export default function App() {
     const employees = Array.from(employeeSet).sort();
     const dates = Object.keys(dateMap).sort();
 
-    // Build CSV rows
-    const rows: string[][] = [];
+    // ====== Sheet 1: 總表 ======
+    const summaryRows: (string | number)[][] = [];
 
-    // Row 1: Employee names header (each spans 3 columns)
-    const header1 = ['日期'];
+    // Row 1: Employee names header
+    const header1: (string | number)[] = ['日期'];
     for (const emp of employees) {
       header1.push(emp, '', '');
     }
     header1.push('當日合計');
-    rows.push(header1);
+    summaryRows.push(header1);
 
     // Row 2: Sub-column headers
-    const header2 = [''];
+    const header2: (string | number)[] = [''];
     for (let i = 0; i < employees.length; i++) {
-      header2.push('疲勞', '車程', '跨日');
+      header2.push('出差津貼', '車程加給', '跨日津貼');
     }
     header2.push('');
-    rows.push(header2);
+    summaryRows.push(header2);
 
     // Employee totals accumulator
     const empTotals: Record<string, { fatigue: number; travel: number; overnight: number }> = {};
@@ -669,16 +673,16 @@ export default function App() {
     for (const dateKey of dates) {
       const [, m, d] = dateKey.split('-').map(Number);
       const dateLabel = `${m}/${d}`;
-      const row = [dateLabel];
+      const row: (string | number)[] = [dateLabel];
       let dayTotal = 0;
 
       for (const emp of employees) {
         const data = dateMap[dateKey][emp];
         if (data) {
           row.push(
-            data.fatigue ? String(Math.round(data.fatigue)) : '',
-            data.travel ? String(Math.round(data.travel)) : '',
-            data.overnight ? String(Math.round(data.overnight)) : ''
+            data.fatigue ? Math.round(data.fatigue) : '',
+            data.travel ? Math.round(data.travel) : '',
+            data.overnight ? Math.round(data.overnight) : ''
           );
           const personDay = data.fatigue + data.travel + data.overnight;
           dayTotal += personDay;
@@ -689,51 +693,120 @@ export default function App() {
           row.push('', '', '');
         }
       }
-      row.push(dayTotal ? String(Math.round(dayTotal)) : '');
+      row.push(dayTotal ? Math.round(dayTotal) : '');
       grandTotal += dayTotal;
-      rows.push(row);
+      summaryRows.push(row);
     }
 
     // Totals row
-    const totalRow = ['合計'];
+    const totalRow: (string | number)[] = ['合計'];
     for (const emp of employees) {
       const t = empTotals[emp];
       totalRow.push(
-        t.fatigue ? String(Math.round(t.fatigue)) : '',
-        t.travel ? String(Math.round(t.travel)) : '',
-        t.overnight ? String(Math.round(t.overnight)) : ''
+        t.fatigue ? Math.round(t.fatigue) : '',
+        t.travel ? Math.round(t.travel) : '',
+        t.overnight ? Math.round(t.overnight) : ''
       );
     }
-    totalRow.push(String(Math.round(grandTotal)));
-    rows.push(totalRow);
+    totalRow.push(Math.round(grandTotal));
+    summaryRows.push(totalRow);
 
-    // Empty row + Grand total row
-    const colCount = header1.length;
-    rows.push(new Array(colCount).fill(''));
-    const grandRow = new Array(colCount).fill('');
+    // Empty row + Grand total
+    summaryRows.push([]);
+    const grandRow: (string | number)[] = new Array(header1.length).fill('');
     grandRow[0] = '總計';
-    grandRow[colCount - 1] = String(Math.round(grandTotal));
-    rows.push(grandRow);
+    grandRow[header1.length - 1] = Math.round(grandTotal);
+    summaryRows.push(grandRow);
 
-    // Generate CSV with BOM for Excel
-    const csvContent = '\uFEFF' + rows.map(row =>
-      row.map(cell => {
-        if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {
-          return `"${cell.replace(/"/g, '""')}"`;
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+
+    // Add summary sheet
+    const summaryWs = XLSX.utils.aoa_to_sheet(summaryRows);
+    XLSX.utils.book_append_sheet(wb, summaryWs, '總表');
+
+    // ====== Per-employee sheets ======
+    // Find employee ID from EMPLOYEES constant
+    const findEmpId = (name: string): string => {
+      const emp = EMPLOYEES.find(e => e.name === name);
+      return emp ? emp.id : '';
+    };
+
+    // Get all dates in the month for complete date column
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const allDates: string[] = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      allDates.push(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+    }
+
+    for (const empName of employees) {
+      const empId = findEmpId(empName);
+      const sheetRows: (string | number)[][] = [];
+
+      // Header row: employee code (name) | 出差津貼 | 車程加給 | 跨日津貼
+      sheetRows.push([`${empId}(${empName})`, '出差津貼', '車程加給', '跨日津貼']);
+
+      let empFatigueTotal = 0;
+      let empTravelTotal = 0;
+      let empOvernightTotal = 0;
+
+      // One row per day of the month
+      for (const dateKey of allDates) {
+        const [, m, d] = dateKey.split('-').map(Number);
+        const dateLabel = `${m}/${d}`;
+        const data = dateMap[dateKey]?.[empName];
+
+        if (data) {
+          const f = Math.round(data.fatigue);
+          const t = Math.round(data.travel);
+          const o = Math.round(data.overnight);
+          sheetRows.push([dateLabel, f || '', t || '', o || '']);
+          empFatigueTotal += data.fatigue;
+          empTravelTotal += data.travel;
+          empOvernightTotal += data.overnight;
+        } else {
+          sheetRows.push([dateLabel, '', '', '']);
         }
-        return cell;
-      }).join(',')
-    ).join('\n');
+      }
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `出差津貼總表_${year}年${month}月.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+      // Totals row
+      sheetRows.push([
+        '合計',
+        empFatigueTotal ? Math.round(empFatigueTotal) : '',
+        empTravelTotal ? Math.round(empTravelTotal) : '',
+        empOvernightTotal ? Math.round(empOvernightTotal) : ''
+      ]);
+
+      const empWs = XLSX.utils.aoa_to_sheet(sheetRows);
+      // Set column widths for readability
+      empWs['!cols'] = [{ wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, empWs, empName);
+    }
+
+    // Download
+    XLSX.writeFile(wb, `出差津貼總表_${year}年${month}月.xlsx`);
+  };
+
+  // --- Delete Record ---
+  const handleDeleteRecord = async (record: TravelRequest) => {
+    const label = `${record.date} - ${record.submitterName || '未知'} - ${record.applicants?.join(', ') || 'N/A'}`;
+    if (!window.confirm(`確定要刪除這筆紀錄嗎？\n\n${label}\n總計：${formatCurrency(record.grandTotal)}`)) {
+      return;
+    }
+
+    try {
+      if (isDemoMode) {
+        const updated = history.filter(item => item.id !== record.id);
+        setHistory(updated);
+        localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updated));
+      } else {
+        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', record.id));
+        // Firestore onSnapshot will automatically update the history state
+      }
+    } catch (error) {
+      console.error('刪除失敗:', error);
+      alert('刪除失敗，請稍後再試');
+    }
   };
 
   // --- Render: Login Screen ---
@@ -1454,11 +1527,11 @@ export default function App() {
                     />
                   </div>
                   <button
-                    onClick={downloadMonthlyCSV}
+                    onClick={downloadMonthlyExcel}
                     className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
                   >
                     <Download className="w-4 h-4" />
-                    下載月報 CSV
+                    下載月報 Excel
                   </button>
                 </div>
               </div>
@@ -1475,6 +1548,7 @@ export default function App() {
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
+                      <th className="px-2 py-3 text-center whitespace-nowrap w-10">刪除</th>
                       <th className="px-4 py-3 whitespace-nowrap">提交時間</th>
                       <th className="px-4 py-3 whitespace-nowrap">提交人</th>
                       <th className="px-4 py-3 whitespace-nowrap">出差日期</th>
@@ -1490,13 +1564,22 @@ export default function App() {
                   <tbody>
                     {history.length === 0 ? (
                       <tr>
-                        <td colSpan={10} className="px-4 py-8 text-center text-slate-400">
+                        <td colSpan={11} className="px-4 py-8 text-center text-slate-400">
                           目前尚無申請資料
                         </td>
                       </tr>
                     ) : (
                       history.map((item) => (
                         <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
+                          <td className="px-2 py-3 text-center">
+                            <button
+                              onClick={() => handleDeleteRecord(item)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                              title="刪除此筆紀錄"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
                           <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                             {formatTimestamp(item.timestamp)}
                           </td>
