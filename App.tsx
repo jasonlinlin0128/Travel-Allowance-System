@@ -86,6 +86,16 @@ export default function App() {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
 
+  // Personal History Filter
+  const [myFilterMode, setMyFilterMode] = useState<'all' | 'year' | 'month' | 'day'>('all');
+  const [myFilterValue, setMyFilterValue] = useState('');
+  const [myFilterKeyword, setMyFilterKeyword] = useState('');
+
+  // Admin Filter
+  const [adminFilterMode, setAdminFilterMode] = useState<'all' | 'year' | 'month' | 'day'>('all');
+  const [adminFilterValue, setAdminFilterValue] = useState('');
+  const [adminFilterKeyword, setAdminFilterKeyword] = useState('');
+
   // Form State
   const [formData, setFormData] = useState<{
     applicants: string[];
@@ -597,6 +607,38 @@ export default function App() {
     return `${y}/${mo}/${d} ${h}:${mi}`;
   };
 
+  const applyRecordFilter = (
+    records: TravelRequest[],
+    mode: 'all' | 'year' | 'month' | 'day',
+    value: string,
+    keyword: string
+  ): TravelRequest[] => {
+    let filtered = records;
+    if (mode !== 'all' && value.trim()) {
+      filtered = filtered.filter(item => {
+        if (!item.date) return false;
+        if (mode === 'year') return item.date.startsWith(value.trim());
+        if (mode === 'month') return item.date.startsWith(value.trim());
+        if (mode === 'day') return item.date === value.trim();
+        return true;
+      });
+    }
+    const kw = keyword.trim().toLowerCase();
+    if (kw) {
+      filtered = filtered.filter(item => {
+        if (item.date?.toLowerCase().includes(kw)) return true;
+        if (item.applicants?.some(name => name.toLowerCase().includes(kw))) return true;
+        const destStr = item.destinations
+          ? item.destinations.map((d: any) => d.address).join(' ')
+          : (item.destination || '');
+        if (destStr.toLowerCase().includes(kw)) return true;
+        if (item.reason?.toLowerCase().includes(kw)) return true;
+        return false;
+      });
+    }
+    return filtered;
+  };
+
   // --- Download Monthly Excel ---
   const downloadMonthlyExcel = () => {
     const [yearStr, monthStr] = exportMonth.split('-');
@@ -884,6 +926,9 @@ export default function App() {
     item.submitterId === currentUser.id ||
     item.applicants?.includes(currentUser.name)
   );
+
+  const filteredMyHistory = applyRecordFilter(myHistory, myFilterMode, myFilterValue, myFilterKeyword);
+  const filteredAdminHistory = applyRecordFilter(history, adminFilterMode, adminFilterValue, adminFilterKeyword);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
@@ -1434,11 +1479,74 @@ export default function App() {
         {activeTab === 'my_history' && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="flex justify-between items-center mb-6">
+              <div className="flex justify-between items-center mb-4">
                 <div>
                   <h2 className="text-xl font-bold text-slate-800">個人申請紀錄</h2>
                   <p className="text-sm text-slate-500">申請人：{currentUser.name} ({currentUser.id})</p>
                 </div>
+              </div>
+
+              {/* Filter Panel */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-slate-600 whitespace-nowrap">篩選模式</label>
+                  <select
+                    value={myFilterMode}
+                    onChange={(e) => { setMyFilterMode(e.target.value as any); setMyFilterValue(''); }}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="all">全部</option>
+                    <option value="month">月</option>
+                    <option value="year">年</option>
+                    <option value="day">日</option>
+                  </select>
+                </div>
+                {myFilterMode === 'month' && (
+                  <input
+                    type="month"
+                    value={myFilterValue}
+                    onChange={(e) => setMyFilterValue(e.target.value)}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                {myFilterMode === 'year' && (
+                  <input
+                    type="number"
+                    placeholder="YYYY"
+                    min="2020"
+                    max="2035"
+                    value={myFilterValue}
+                    onChange={(e) => setMyFilterValue(e.target.value)}
+                    className="w-24 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                {myFilterMode === 'day' && (
+                  <input
+                    type="date"
+                    value={myFilterValue}
+                    onChange={(e) => setMyFilterValue(e.target.value)}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                <div className="relative flex-1 min-w-[160px]">
+                  <input
+                    type="text"
+                    placeholder="搜尋關鍵字（姓名、地點、事由、日期）"
+                    value={myFilterKeyword}
+                    onChange={(e) => setMyFilterKeyword(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 pr-7 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  {myFilterKeyword && (
+                    <button
+                      onClick={() => setMyFilterKeyword('')}
+                      className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 text-xs"
+                      title="清除"
+                    >✕</button>
+                  )}
+                </div>
+                <span className="text-xs text-slate-400 whitespace-nowrap">
+                  顯示 {filteredMyHistory.length} / {myHistory.length} 筆
+                </span>
               </div>
 
               <div className="overflow-x-auto">
@@ -1454,14 +1562,14 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {myHistory.length === 0 ? (
+                    {filteredMyHistory.length === 0 ? (
                       <tr>
                         <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
-                          尚無申請資料
+                          {myHistory.length === 0 ? '尚無申請資料' : '找不到符合條件的紀錄'}
                         </td>
                       </tr>
                     ) : (
-                      myHistory.map((item) => {
+                      filteredMyHistory.map((item) => {
                         const isSubmitter = item.submitterId === currentUser.id;
                         return (
                           <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
@@ -1511,19 +1619,26 @@ export default function App() {
         {activeTab === 'admin' && currentUser.id === ADMIN_ID && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-800">出差津貼彙總表</h2>
-                  <p className="text-sm text-slate-500">供管理部 (小井) 月結使用</p>
+              <div className="mb-6">
+                <h2 className="text-xl font-bold text-slate-800">出差津貼彙總表</h2>
+                <p className="text-sm text-slate-500">供管理部 (小井) 月結使用</p>
+              </div>
+
+              {/* Export Tools Card */}
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Download className="w-4 h-4 text-green-700" />
+                  <span className="text-sm font-semibold text-green-800">匯出工具</span>
+                  <span className="text-xs text-green-600">（選擇月份下載 Excel 月報）</span>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-2">
-                    <Calendar className="w-4 h-4 text-slate-400" />
+                    <Calendar className="w-4 h-4 text-green-600" />
                     <input
                       type="month"
                       value={exportMonth}
                       onChange={e => setExportMonth(e.target.value)}
-                      className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      className="border border-green-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-green-500 outline-none"
                     />
                   </div>
                   <button
@@ -1535,11 +1650,75 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <div className="flex justify-end mb-4">
+
+              {/* Filter Panel */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-slate-600 whitespace-nowrap">篩選模式</label>
+                  <select
+                    value={adminFilterMode}
+                    onChange={(e) => { setAdminFilterMode(e.target.value as any); setAdminFilterValue(''); }}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  >
+                    <option value="all">全部</option>
+                    <option value="month">月</option>
+                    <option value="year">年</option>
+                    <option value="day">日</option>
+                  </select>
+                </div>
+                {adminFilterMode === 'month' && (
+                  <input
+                    type="month"
+                    value={adminFilterValue}
+                    onChange={(e) => setAdminFilterValue(e.target.value)}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                {adminFilterMode === 'year' && (
+                  <input
+                    type="number"
+                    placeholder="YYYY"
+                    min="2020"
+                    max="2035"
+                    value={adminFilterValue}
+                    onChange={(e) => setAdminFilterValue(e.target.value)}
+                    className="w-24 border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                {adminFilterMode === 'day' && (
+                  <input
+                    type="date"
+                    value={adminFilterValue}
+                    onChange={(e) => setAdminFilterValue(e.target.value)}
+                    className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                )}
+                <div className="relative flex-1 min-w-[160px]">
+                  <input
+                    type="text"
+                    placeholder="搜尋關鍵字（姓名、地點、事由、日期）"
+                    value={adminFilterKeyword}
+                    onChange={(e) => setAdminFilterKeyword(e.target.value)}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-1.5 pr-7 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  {adminFilterKeyword && (
+                    <button
+                      onClick={() => setAdminFilterKeyword('')}
+                      className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 text-xs"
+                      title="清除"
+                    >✕</button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-between items-center mb-4">
+                <span className="text-sm text-slate-500">
+                  顯示 {filteredAdminHistory.length} / {history.length} 筆
+                </span>
                 <div className="text-right">
-                  <div className="text-sm text-slate-500">本期累積申請金額</div>
+                  <div className="text-xs text-slate-500">篩選結果總金額</div>
                   <div className="text-2xl font-bold text-blue-600">
-                    {formatCurrency(history.reduce((sum, item) => sum + (item.grandTotal || 0), 0))}
+                    {formatCurrency(filteredAdminHistory.reduce((sum, item) => sum + (item.grandTotal || 0), 0))}
                   </div>
                 </div>
               </div>
@@ -1562,14 +1741,14 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {history.length === 0 ? (
+                    {filteredAdminHistory.length === 0 ? (
                       <tr>
                         <td colSpan={11} className="px-4 py-8 text-center text-slate-400">
-                          目前尚無申請資料
+                          {history.length === 0 ? '目前尚無申請資料' : '找不到符合條件的紀錄'}
                         </td>
                       </tr>
                     ) : (
-                      history.map((item) => (
+                      filteredAdminHistory.map((item) => (
                         <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
                           <td className="px-2 py-3 text-center">
                             <button
