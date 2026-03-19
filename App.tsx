@@ -30,7 +30,6 @@ import {
 } from 'lucide-react';
 
 // Firebase is initialized via services/firebase.ts (uses VITE_ env vars)
-const appId = APP_ID;
 
 // --- Data: Predefined Locations ---
 const PREDEFINED_LOCATIONS = [
@@ -155,7 +154,7 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     const q = query(
-      collection(db, 'artifacts', appId, 'public', 'data', 'travel_allowances'),
+      collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'),
       orderBy('timestamp', 'desc')
     );
     const unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
@@ -313,7 +312,7 @@ export default function App() {
         timestamp: serverTimestamp()
       };
 
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'travel_allowances'), payload);
+      await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), payload);
 
       setFormData(prev => ({
         ...prev,
@@ -328,7 +327,8 @@ export default function App() {
 
       setActiveTab('list');
     } catch (error) {
-      console.error("Error:", error);
+      console.error("Error submitting:", error);
+      alert('送出失敗，請檢查網路連線後再試一次。');
     } finally {
       setIsSubmitting(false);
     }
