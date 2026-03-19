@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   signInAnonymously,
-  onAuthStateChanged,
-  signInWithCustomToken
+  onAuthStateChanged
 } from 'firebase/auth';
 import {
   collection,
@@ -118,7 +117,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'form' | 'list'>('form');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => {
     const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return `${now.getFullYear()} -${String(now.getMonth() + 1).padStart(2, '0')} `;
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -146,11 +145,7 @@ export default function App() {
   // --- Auth & Data Fetching ---
   useEffect(() => {
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
+      await signInAnonymously(auth);
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, setUser);
@@ -361,13 +356,13 @@ export default function App() {
           <div className="flex gap-2">
             <button
               onClick={() => setActiveTab('form')}
-              className={`px-4 py-2 rounded-md transition-colors ${activeTab === 'form' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'}`}
+              className={`px - 4 py - 2 rounded - md transition - colors ${activeTab === 'form' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'} `}
             >
               申請表單
             </button>
             <button
               onClick={() => setActiveTab('list')}
-              className={`px-4 py-2 rounded-md transition-colors flex items-center gap-2 ${activeTab === 'list' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'}`}
+              className={`px - 4 py - 2 rounded - md transition - colors flex items - center gap - 2 ${activeTab === 'list' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'} `}
             >
               <History className="w-4 h-4" />
               申請紀錄
@@ -416,7 +411,7 @@ export default function App() {
                               type="text"
                               value={name}
                               onChange={(e) => handleApplicantChange(index, e.target.value)}
-                              placeholder={`出差人員 ${index + 1}`}
+                              placeholder={`出差人員 ${index + 1} `}
                               className="w-full pl-10 pr-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                           </div>
@@ -699,7 +694,7 @@ export default function App() {
 
           // 確保當前月一定在清單內
           const now = new Date();
-          const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          const currentMonthStr = `${now.getFullYear()} -${String(now.getMonth() + 1).padStart(2, '0')} `;
           if (!monthsWithData.includes(currentMonthStr)) monthsWithData.unshift(currentMonthStr);
 
           const filteredHistory = history.filter(item => item.date?.startsWith(selectedMonth));
@@ -726,15 +721,15 @@ export default function App() {
                         <button
                           key={ym}
                           onClick={() => setSelectedMonth(ym)}
-                          className={`w-full text-left px-3 py-2.5 text-sm transition-colors ${isSelected
+                          className={`w - full text - left px - 3 py - 2.5 text - sm transition - colors ${isSelected
                               ? 'bg-blue-600 text-white font-semibold'
                               : 'text-slate-700 hover:bg-slate-50'
-                            }`}
+                            } `}
                         >
                           <div className={isSelected ? 'text-white' : 'text-slate-800'}>
                             {formatMonth(ym)}
                           </div>
-                          <div className={`text-xs mt-0.5 ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
+                          <div className={`text - xs mt - 0.5 ${isSelected ? 'text-blue-200' : 'text-slate-400'} `}>
                             {count > 0 ? `${count} 筆` : '尚無資料'}
                           </div>
                         </button>
