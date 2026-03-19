@@ -1,28 +1,26 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
+import {
+  signInAnonymously,
   onAuthStateChanged,
   signInWithCustomToken
 } from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  orderBy, 
+import {
+  collection,
+  addDoc,
+  onSnapshot,
+  query,
+  orderBy,
   serverTimestamp
 } from 'firebase/firestore';
-import { 
-  Calculator, 
-  Clock, 
-  MapPin, 
-  Users, 
-  Moon, 
-  AlertCircle, 
-  CheckCircle2, 
+import { auth, db, APP_ID } from './services/firebase';
+import {
+  Calculator,
+  Clock,
+  MapPin,
+  Users,
+  Moon,
+  AlertCircle,
+  CheckCircle2,
   FileText,
   Car,
   History,
@@ -32,12 +30,8 @@ import {
   Map
 } from 'lucide-react';
 
-// --- Firebase Configuration & Initialization ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// Firebase is initialized via services/firebase.ts (uses VITE_ env vars)
+const appId = APP_ID;
 
 // --- Data: Predefined Locations ---
 const PREDEFINED_LOCATIONS = [
@@ -91,7 +85,7 @@ const LOCATION_GROUPS = PREDEFINED_LOCATIONS.reduce((groups, loc) => {
 interface TravelRequest {
   id?: string;
   userId: string;
-  applicants: string[]; 
+  applicants: string[];
   reason: string;
   destination: string;
   date: string;
@@ -100,20 +94,20 @@ interface TravelRequest {
   oneWayHours: number;
   passengers: number;
   nights: number;
-  
+
   // Calculated Results
   fatigueAllowanceTotal: number;
   travelAllowanceTotal: number;
   overnightAllowanceTotal: number;
   grandTotal: number;
-  
+
   perPersonTravel: number;
   perPersonFatigue: number;
   perPersonOvernight: number;
-  
+
   eligibleForLateStart: boolean;
   allowedRestTime: number;
-  
+
   timestamp?: any;
 }
 
@@ -181,7 +175,7 @@ export default function App() {
     let singlePersonFatigue = 0;
     let carTotalAllowance = 0;
     let singlePersonOvernight = 0;
-    
+
     let isLateStartEligible = false;
     let restTime = 0;
 
@@ -190,7 +184,7 @@ export default function App() {
     // 1. 高疲勞值計算 (修正 Bug: 05:00 應包含在內)
     const [startH, startM] = formData.startTime.split(':').map(Number);
     const [endH, endM] = formData.endTime.split(':').map(Number);
-    
+
     // 轉為十進位小數
     const startDec = startH + startM / 60;
     const endDec = endH + endM / 60;
@@ -204,7 +198,7 @@ export default function App() {
       // 使用 Math.floor(x * 2) / 2 來確保以 0.5 為單位向下取整 (保守計算)，或者依貴司習慣改為 round
       // 此處邏輯：5:00 出發 -> duration 3 -> 3.0
       // 4:55 出發 -> duration 3.08 -> 3.0
-      const billableHours = Math.floor(duration * 2) / 2; 
+      const billableHours = Math.floor(duration * 2) / 2;
       singlePersonFatigue += billableHours * 200;
     }
 
@@ -220,8 +214,8 @@ export default function App() {
     const oneWayHours = formData.oneWayHours;
     const units = Math.floor(oneWayHours / 1.5);
     const singleTripAllowance = units * 30;
-    carTotalAllowance = singleTripAllowance * 2; 
-    
+    carTotalAllowance = singleTripAllowance * 2;
+
     restTime = Math.floor(oneWayHours / 1.5) * 15;
 
     // 3. 跨日津貼
@@ -235,11 +229,11 @@ export default function App() {
       travelTotal: carTotalAllowance,
       overnightTotal,
       grandTotal: fatigueTotal + carTotalAllowance + overnightTotal,
-      
+
       perPersonFatigue: singlePersonFatigue,
       perPersonOvernight: singlePersonOvernight,
       perPersonTravel: carTotalAllowance / headcount,
-      
+
       lateStart: isLateStartEligible,
       rest: restTime,
       headcount
@@ -289,7 +283,7 @@ export default function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    
+
     if (formData.applicants.some(name => !name.trim())) {
       alert("請填寫所有出差人員姓名");
       return;
@@ -309,7 +303,7 @@ export default function App() {
         endTime: formData.endTime,
         oneWayHours: formData.oneWayHours,
         nights: formData.nights,
-        
+
         fatigueAllowanceTotal: calculation.fatigueTotal,
         travelAllowanceTotal: calculation.travelTotal,
         overnightAllowanceTotal: calculation.overnightTotal,
@@ -318,14 +312,14 @@ export default function App() {
         perPersonTravel: calculation.perPersonTravel,
         perPersonFatigue: calculation.perPersonFatigue,
         perPersonOvernight: calculation.perPersonOvernight,
-        
+
         eligibleForLateStart: calculation.lateStart,
         allowedRestTime: calculation.rest,
         timestamp: serverTimestamp()
       };
 
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'travel_allowances'), payload);
-      
+
       setFormData(prev => ({
         ...prev,
         applicants: [''],
@@ -336,7 +330,7 @@ export default function App() {
         oneWayHours: 0,
         nights: 0
       }));
-      
+
       setActiveTab('list');
     } catch (error) {
       console.error("Error:", error);
@@ -351,7 +345,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
-      
+
       {/* Header */}
       <header className="bg-blue-900 text-white shadow-lg sticky top-0 z-50">
         <div className="max-w-5xl mx-auto px-4 py-4 flex justify-between items-center">
@@ -365,13 +359,13 @@ export default function App() {
             </div>
           </div>
           <div className="flex gap-2">
-            <button 
+            <button
               onClick={() => setActiveTab('form')}
               className={`px-4 py-2 rounded-md transition-colors ${activeTab === 'form' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'}`}
             >
               申請表單
             </button>
-            <button 
+            <button
               onClick={() => setActiveTab('list')}
               className={`px-4 py-2 rounded-md transition-colors flex items-center gap-2 ${activeTab === 'list' ? 'bg-blue-700 text-white font-medium' : 'hover:bg-blue-800 text-blue-200'}`}
             >
@@ -383,7 +377,7 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-8">
-        
+
         {activeTab === 'form' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Left: The Form */}
@@ -393,7 +387,7 @@ export default function App() {
                   <FileText className="w-5 h-5 text-blue-600" />
                   <h2 className="font-semibold text-slate-700">基本資料填寫</h2>
                 </div>
-                
+
                 <form onSubmit={handleSubmit} className="p-6 space-y-6">
                   {/* Row 1: Applicants */}
                   <div className="bg-blue-50/50 p-4 rounded-lg border border-blue-100">
@@ -402,8 +396,8 @@ export default function App() {
                         <Users className="w-4 h-4 text-blue-600" />
                         出差人員名單 ({formData.applicants.length}人)
                       </span>
-                      <button 
-                        type="button" 
+                      <button
+                        type="button"
                         onClick={addApplicant}
                         className="text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 px-2 py-1 rounded-md flex items-center gap-1 transition-colors"
                       >
@@ -411,15 +405,15 @@ export default function App() {
                         新增人員
                       </button>
                     </label>
-                    
+
                     <div className="space-y-3">
                       {formData.applicants.map((name, index) => (
                         <div key={index} className="flex gap-2">
                           <div className="relative flex-1">
                             <User className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                            <input 
+                            <input
                               required
-                              type="text" 
+                              type="text"
                               value={name}
                               onChange={(e) => handleApplicantChange(index, e.target.value)}
                               placeholder={`出差人員 ${index + 1}`}
@@ -427,7 +421,7 @@ export default function App() {
                             />
                           </div>
                           {formData.applicants.length > 1 && (
-                            <button 
+                            <button
                               type="button"
                               onClick={() => removeApplicant(index)}
                               className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
@@ -443,9 +437,9 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">出差日期</label>
-                      <input 
+                      <input
                         required
-                        type="date" 
+                        type="date"
                         name="date"
                         value={formData.date}
                         onChange={handleInputChange}
@@ -454,37 +448,37 @@ export default function App() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">出差地址</label>
-                      
+
                       {/* Location Select */}
                       <div className="mb-2 relative">
-                         <Map className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
-                         <select
-                           onChange={handleLocationSelect}
-                           className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-slate-50 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer"
-                           defaultValue=""
-                         >
-                           <option value="" disabled>快速帶入常用地點...</option>
-                           {Object.keys(LOCATION_GROUPS).map(region => (
-                             <optgroup key={region} label={region}>
-                               {LOCATION_GROUPS[region].map(loc => (
-                                 <option key={loc.name} value={loc.name}>
-                                   {loc.name} ({loc.hours}H)
-                                 </option>
-                               ))}
-                             </optgroup>
-                           ))}
-                           <option value="custom">其他地點 (手動輸入)</option>
-                         </select>
-                         <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
-                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                         </div>
+                        <Map className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+                        <select
+                          onChange={handleLocationSelect}
+                          className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-slate-50 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer"
+                          defaultValue=""
+                        >
+                          <option value="" disabled>快速帶入常用地點...</option>
+                          {Object.keys(LOCATION_GROUPS).map(region => (
+                            <optgroup key={region} label={region}>
+                              {LOCATION_GROUPS[region].map(loc => (
+                                <option key={loc.name} value={loc.name}>
+                                  {loc.name} ({loc.hours}H)
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                          <option value="custom">其他地點 (手動輸入)</option>
+                        </select>
+                        <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
                       </div>
 
                       <div className="relative">
                         <MapPin className="absolute left-3 top-2.5 w-5 h-5 text-slate-400" />
-                        <input 
+                        <input
                           required
-                          type="text" 
+                          type="text"
                           name="destination"
                           value={formData.destination}
                           onChange={handleInputChange}
@@ -498,9 +492,9 @@ export default function App() {
                   {/* Row 2 */}
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1">出差事由</label>
-                    <input 
+                    <input
                       required
-                      type="text" 
+                      type="text"
                       name="reason"
                       value={formData.reason}
                       onChange={handleInputChange}
@@ -516,13 +510,13 @@ export default function App() {
                     <Clock className="w-4 h-4" />
                     時間與行程 (津貼計算依據)
                   </h3>
-                  
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-blue-50 p-4 rounded-lg border border-blue-100">
                     <div>
                       <label className="block text-xs font-medium text-blue-800 mb-1">出發時間 (24h)</label>
-                      <input 
+                      <input
                         required
-                        type="time" 
+                        type="time"
                         name="startTime"
                         value={formData.startTime}
                         onChange={handleInputChange}
@@ -532,9 +526,9 @@ export default function App() {
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-blue-800 mb-1">返回/到廠時間 (24h)</label>
-                      <input 
+                      <input
                         required
-                        type="time" 
+                        type="time"
                         name="endTime"
                         value={formData.endTime}
                         onChange={handleInputChange}
@@ -548,9 +542,9 @@ export default function App() {
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">單趟車程 (Google Maps)</label>
                       <div className="relative">
-                        <input 
+                        <input
                           required
-                          type="number" 
+                          type="number"
                           step="0.1"
                           min="0"
                           name="oneWayHours"
@@ -568,9 +562,9 @@ export default function App() {
                       <label className="block text-sm font-medium text-slate-700 mb-1">過夜天數</label>
                       <div className="relative">
                         <Moon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                        <input 
+                        <input
                           required
-                          type="number" 
+                          type="number"
                           min="0"
                           name="nights"
                           value={formData.nights}
@@ -582,8 +576,8 @@ export default function App() {
                   </div>
 
                   <div className="pt-4">
-                    <button 
-                      type="submit" 
+                    <button
+                      type="submit"
                       disabled={isSubmitting}
                       className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-all flex justify-center items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
@@ -607,7 +601,7 @@ export default function App() {
 
             {/* Right: Live Preview & Policy Check */}
             <div className="space-y-6">
-              
+
               {/* Calculation Card */}
               <div className="bg-white rounded-xl shadow-lg border border-blue-100 overflow-hidden sticky top-24">
                 <div className="bg-gradient-to-r from-blue-600 to-blue-800 p-6 text-white">
@@ -624,7 +618,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="p-6 space-y-4">
                   {/* Fatigue */}
                   <div className="py-2 border-b border-slate-100">
@@ -637,9 +631,9 @@ export default function App() {
                       <span>每人 {formatCurrency(calculation.perPersonFatigue)}</span>
                     </div>
                     {(calculation.perPersonFatigue > 0 && formData.startTime.startsWith('05:0')) && (
-                       <div className="text-xs text-green-600 mt-1 bg-green-50 p-1 rounded">
-                         ✓ 已包含 05:00 出發津貼
-                       </div>
+                      <div className="text-xs text-green-600 mt-1 bg-green-50 p-1 rounded">
+                        ✓ 已包含 05:00 出發津貼
+                      </div>
                     )}
                   </div>
 
@@ -732,11 +726,10 @@ export default function App() {
                         <button
                           key={ym}
                           onClick={() => setSelectedMonth(ym)}
-                          className={`w-full text-left px-3 py-2.5 text-sm transition-colors ${
-                            isSelected
+                          className={`w-full text-left px-3 py-2.5 text-sm transition-colors ${isSelected
                               ? 'bg-blue-600 text-white font-semibold'
                               : 'text-slate-700 hover:bg-slate-50'
-                          }`}
+                            }`}
                         >
                           <div className={isSelected ? 'text-white' : 'text-slate-800'}>
                             {formatMonth(ym)}
