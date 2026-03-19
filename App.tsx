@@ -117,7 +117,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'form' | 'list'>('form');
   const [selectedMonth, setSelectedMonth] = useState<string>(() => {
     const now = new Date();
-    return `${now.getFullYear()} -${String(now.getMonth() + 1).padStart(2, '0')} `;
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -694,7 +694,7 @@ export default function App() {
 
           // 確保當前月一定在清單內
           const now = new Date();
-          const currentMonthStr = `${now.getFullYear()} -${String(now.getMonth() + 1).padStart(2, '0')} `;
+          const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
           if (!monthsWithData.includes(currentMonthStr)) monthsWithData.unshift(currentMonthStr);
 
           const filteredHistory = history.filter(item => item.date?.startsWith(selectedMonth));
@@ -722,8 +722,8 @@ export default function App() {
                           key={ym}
                           onClick={() => setSelectedMonth(ym)}
                           className={`w - full text - left px - 3 py - 2.5 text - sm transition - colors ${isSelected
-                              ? 'bg-blue-600 text-white font-semibold'
-                              : 'text-slate-700 hover:bg-slate-50'
+                            ? 'bg-blue-600 text-white font-semibold'
+                            : 'text-slate-700 hover:bg-slate-50'
                             } `}
                         >
                           <div className={isSelected ? 'text-white' : 'text-slate-800'}>
