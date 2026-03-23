@@ -37,7 +37,7 @@ export interface TravelRequest {
   nights: number;
 
   // Multi-day entries (for overnight trips)
-  dayEntries?: DayEntry[];
+  dayEntries?: DayEntry[] | null;
 
   // Multi-destination (new)
   destinations?: Destination[];
