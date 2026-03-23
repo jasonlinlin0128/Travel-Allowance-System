@@ -558,7 +558,19 @@ export default function App() {
         await new Promise(resolve => setTimeout(resolve, 600)); 
       } else {
         // Firebase Save
-        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), payload);
+        // Remove any undefined values - Firestore rejects them
+        const removeUndefined = (o: any): any => {
+          if (Array.isArray(o)) return o.map(removeUndefined);
+          if (o !== null && typeof o === 'object') {
+            const result: any = {};
+            for (const [k, v] of Object.entries(o)) {
+              if (v !== undefined) result[k] = removeUndefined(v);
+            }
+            return result;
+          }
+          return o;
+        };
+        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), removeUndefined(payload));
       }
       
       setFormData(prev => ({
@@ -1814,3 +1826,4 @@ export default function App() {
     </div>
   );
 }
+
