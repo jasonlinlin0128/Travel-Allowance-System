@@ -107,6 +107,13 @@ interface TravelRequest {
   allowedRestTime: number;
 
   timestamp?: any;
+
+  // 舊版資料相容性 (Vercel build ts 檢查需要)
+  applicantName?: string;
+  fatigueAllowance?: number;
+  travelAllowance?: number;
+  overnightAllowance?: number;
+  totalAmount?: number;
 }
 
 // --- Main Component ---
