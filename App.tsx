@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+﻿import { useState, useEffect, useMemo } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -525,7 +525,7 @@ export default function App() {
           ? formData.dayEntries[formData.dayEntries.length - 1].endTime
           : formData.endTime,
         nights: formData.nights,
-        dayEntries: formData.nights > 0 ? formData.dayEntries : undefined,
+        dayEntries: formData.nights > 0 ? formData.dayEntries : null,
 
         // Multi-destination
         destinations: formData.destinations,
