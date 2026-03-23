@@ -570,7 +570,11 @@ export default function App() {
           }
           return o;
         };
-        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), removeUndefined(payload));
+        // Re-attach serverTimestamp() AFTER removeUndefined, because FieldValue objects
+        // cannot survive recursive object traversal (their internal state gets stripped)
+        const cleanPayload = removeUndefined(payload);
+        cleanPayload.timestamp = serverTimestamp();
+        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), cleanPayload);
       }
       
       setFormData(prev => ({
@@ -1826,4 +1830,5 @@ export default function App() {
     </div>
   );
 }
+
 
