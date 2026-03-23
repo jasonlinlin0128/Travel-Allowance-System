@@ -798,16 +798,16 @@ export default function App() {
                                 <div className="text-xs text-slate-400">{item.reason}</div>
                               </td>
                               <td className="px-4 py-3 text-right font-mono">
-                                {formatCurrency(item.fatigueAllowanceTotal || item.fatigueAllowance)}
+                                {formatCurrency(item.fatigueAllowanceTotal ?? item.fatigueAllowance ?? 0)}
                               </td>
                               <td className="px-4 py-3 text-right font-mono">
-                                {formatCurrency(item.travelAllowanceTotal || item.travelAllowance)}
+                                {formatCurrency(item.travelAllowanceTotal ?? item.travelAllowance ?? 0)}
                               </td>
                               <td className="px-4 py-3 text-right font-mono">
-                                {formatCurrency(item.overnightAllowanceTotal || item.overnightAllowance)}
+                                {formatCurrency(item.overnightAllowanceTotal ?? item.overnightAllowance ?? 0)}
                               </td>
                               <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
-                                {formatCurrency(item.grandTotal || item.totalAmount)}
+                                {formatCurrency(item.grandTotal ?? item.totalAmount ?? 0)}
                               </td>
                               <td className="px-4 py-3 text-center">
                                 {item.eligibleForLateStart && (
