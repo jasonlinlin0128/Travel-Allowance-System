@@ -48,7 +48,8 @@ const {
   orderBy,
   serverTimestamp,
   deleteDoc,
-  doc
+  doc,
+  updateDoc
 } = firestore as any;
 
 // Define the Admin ID explicitly
@@ -75,6 +76,7 @@ export default function App() {
   const [history, setHistory] = useState<TravelRequest[]>([]);
   const [activeTab, setActiveTab] = useState<'form' | 'my_history' | 'admin'>('form');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
   // AI State
@@ -495,6 +497,23 @@ export default function App() {
     }
   };
 
+  // --- Edit Record ---
+  const handleEditRecord = (record: TravelRequest) => {
+    setFormData({
+      applicants: record.applicants || [currentUser!.name],
+      reason: record.reason || '',
+      date: record.date || new Date().toISOString().split('T')[0],
+      destinations: record.destinations || [{ address: record.destination || '', oneWayHours: record.oneWayHours || record.effectiveOneWayHours || 0 }],
+      effectiveOneWayHours: record.effectiveOneWayHours || record.oneWayHours || 0,
+      startTime: record.startTime || '08:00',
+      endTime: record.endTime || '17:00',
+      nights: record.nights || 0,
+      dayEntries: record.dayEntries || [],
+    });
+    setEditingRecordId(record.id!);
+    setActiveTab('form');
+    window.scrollTo(0, 0);
+  };
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!firebaseUser && !isDemoMode) return;
@@ -574,7 +593,14 @@ export default function App() {
         // cannot survive recursive object traversal (their internal state gets stripped)
         const cleanPayload = removeUndefined(payload);
         cleanPayload.timestamp = serverTimestamp();
-        await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), cleanPayload);
+        if (editingRecordId) {
+          // UPDATE existing record
+          await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', editingRecordId), cleanPayload);
+          setEditingRecordId(null);
+        } else {
+          // ADD new record
+          await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), cleanPayload);
+        }
       }
       
       setFormData(prev => ({
@@ -1025,9 +1051,21 @@ export default function App() {
             {/* Left: The Form */}
             <div className="lg:col-span-2 space-y-6">
               <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-blue-600" />
-                  <h2 className="font-semibold text-slate-700">新申請單</h2>
+                <div className="bg-slate-50 px-6 py-4 border-b border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-5 h-5 text-blue-600" />
+                    <h2 className="font-semibold text-slate-700">{editingRecordId ? '✏️ 修改申請單' : '新申請單'}</h2>
+                  </div>
+                  {editingRecordId && (
+                    <div className="mt-2 flex items-center gap-3 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 text-sm text-amber-800">
+                      <span>⚠️ 您正在修改已送出的申請單，儲存後將覆蓋原始記錄。</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditingRecordId(null)}
+                        className="ml-auto text-xs underline text-amber-600 hover:text-amber-900 whitespace-nowrap"
+                      >取消修改</button>
+                    </div>
+                  )}
                 </div>
                 
                 <form onSubmit={handleSubmit} className="p-6 space-y-6">
@@ -1383,7 +1421,7 @@ export default function App() {
                       ) : (
                         <>
                           <CheckCircle2 className="w-5 h-5" />
-                          提交 {formData.applicants.length} 人申請單
+                          {editingRecordId ? `儲存修改（{formData.applicants.length} 人）` : `提交 {formData.applicants.length} 人申請單`}
                         </>
                       )}
                     </button>
@@ -1619,6 +1657,13 @@ export default function App() {
                                   參與出差
                                 </span>
                               )}
+                              {isSubmitter && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleEditRecord(item)}
+                                  className="mt-1.5 block mx-auto text-xs text-blue-500 hover:text-blue-700 underline transition-colors"
+                                >✏️ 編輯</button>
+                              )}
                             </td>
                           </tr>
                         );
@@ -1830,5 +1875,8 @@ export default function App() {
     </div>
   );
 }
+
+
+
 
 
