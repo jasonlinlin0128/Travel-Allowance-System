@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -320,11 +320,20 @@ export default function App() {
       singlePersonFatigue = calcDayFatigue(formData.startTime, formData.endTime);
     }
 
-    // 2. Travel Allowance (Car) - based on effective one-way hours (max of all destinations)
+    // 2. Travel Allowance (Car)
+    // Multi-day: each day's drivingHours contributes per leg (no global x2)
+    // Single-day: effectiveOneWayHours x2 (round trip)
     const oneWayHours = formData.effectiveOneWayHours;
     const units = Math.floor(oneWayHours / 1.5);
     const singleTripAllowance = units * 30;
-    carTotalAllowance = singleTripAllowance * 2;
+    if (formData.nights > 0 && formData.dayEntries.length > 0) {
+      carTotalAllowance = formData.dayEntries.reduce((sum, entry) => {
+        const h = entry.drivingHours ?? 0;
+        return sum + Math.floor(h / 1.5) * 30;
+      }, 0);
+    } else {
+      carTotalAllowance = singleTripAllowance * 2;
+    }
 
     // 15 mins rest per 1.5 hours driving
     restTime = Math.floor(oneWayHours / 1.5) * 15;
@@ -379,7 +388,7 @@ export default function App() {
     }));
   };
 
-  const handleDayEntryChange = (index: number, field: 'startTime' | 'endTime', value: string) => {
+  const handleDayEntryChange = (index: number, field: 'startTime' | 'endTime' | 'drivingHours' | 'destinations', value: string | number) => {
     setFormData(prev => {
       const newEntries = [...prev.dayEntries];
       newEntries[index] = { ...newEntries[index], [field]: value };
@@ -1366,6 +1375,43 @@ export default function App() {
                                 )}
                               </div>
                             </div>
+                            {/* 當日路線與行駛時數 */}
+                            <div className="mt-3 grid grid-cols-2 gap-3">
+                              <div>
+                                <label className="block text-xs font-medium text-indigo-700 mb-1">
+                                  當日路線 <span className="text-indigo-400 font-normal">(選填)</span>
+                                </label>
+                                <input
+                                  type="text"
+                                  value={entry.destinations || ''}
+                                  onChange={(e) => handleDayEntryChange(index, 'destinations', e.target.value)}
+                                  placeholder="e.g. 公司→淡水→花蓮"
+                                  className="w-full px-3 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 text-sm"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-medium text-indigo-700 mb-1">
+                                  當日行駛時數 <span className="text-red-400">*</span>
+                                </label>
+                                <div className="relative">
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    min="0"
+                                    value={entry.drivingHours ?? ''}
+                                    onChange={(e) => handleDayEntryChange(index, 'drivingHours', Number(e.target.value))}
+                                    placeholder="0"
+                                    className="w-full pl-3 pr-10 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 text-sm"
+                                  />
+                                  <span className="absolute right-3 top-2 text-indigo-400 text-xs">小時</span>
+                                </div>
+                                {(entry.drivingHours ?? 0) > 0 && (
+                                  <p className="text-xs text-indigo-600 mt-1">
+                                    ≈ {formatCurrency(Math.floor((entry.drivingHours ?? 0) / 1.5) * 30)} 交通津貼
+                                  </p>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         );
                       })}
@@ -1875,6 +1921,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 

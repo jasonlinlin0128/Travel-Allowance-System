@@ -18,6 +18,8 @@ export interface DayEntry {
   date: string;      // YYYY-MM-DD
   startTime: string; // HH:MM
   endTime: string;   // HH:MM
+  destinations?: string; // 當日路線備註 e.g. "公司→淡水→花蓮"
+  drivingHours?: number; // 當日實際行駛時數（單程小時）
 }
 
 export interface TravelRequest {
