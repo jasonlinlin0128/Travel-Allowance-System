@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+﻿import { useState, useEffect, useMemo } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -1467,7 +1467,7 @@ export default function App() {
                       ) : (
                         <>
                           <CheckCircle2 className="w-5 h-5" />
-                          {editingRecordId ? `儲存修改（{formData.applicants.length} 人）` : `提交 {formData.applicants.length} 人申請單`}
+                          {editingRecordId ? `儲存修改（${formData.applicants.length} 人）` : `提交 ${formData.applicants.length} 人申請單`}
                         </>
                       )}
                     </button>
@@ -1521,12 +1521,18 @@ export default function App() {
                   {/* Travel (Car) */}
                   <div className="py-2 border-b border-slate-100">
                     <div className="flex justify-between items-center mb-1">
-                      <div className="text-slate-600 text-sm font-medium">車程加給 <span className="text-xs text-slate-400">(來回)</span></div>
+                      <div className="text-slate-600 text-sm font-medium">車程加給 <span className="text-xs text-slate-400">{formData.nights > 0 ? "(各日合計)" : "(來回)"}</span></div>
                       <div className="font-mono font-bold text-slate-800">{formatCurrency(calculation.travelTotal)}</div>
                     </div>
                     <div className="text-xs text-slate-400 space-y-0.5">
-                      <div>單程 {formData.effectiveOneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
-                      <div>來回: {formatCurrency(calculation.singleTripAllowance)} × 2 = {formatCurrency(calculation.travelTotal)}</div>
+                      {formData.nights > 0 ? (
+                        <div>各天行駛時數加總 = {formatCurrency(calculation.travelTotal)}</div>
+                      ) : (
+                        <>
+                          <div>單程 {formData.effectiveOneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
+                          <div>來回: {formatCurrency(calculation.singleTripAllowance)} × 2 = {formatCurrency(calculation.travelTotal)}</div>
+                        </>
+                      )}
                       <div className="flex justify-between">
                         <span>總額均分 ({calculation.headcount}人)</span>
                         <span className="text-blue-600 font-medium">每人 {formatCurrency(calculation.perPersonTravel)}</span>
@@ -1921,6 +1927,8 @@ export default function App() {
     </div>
   );
 }
+
+
 
 
 
