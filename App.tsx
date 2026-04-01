@@ -1241,7 +1241,7 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div class="space-y-3">
+                    <div className="space-y-3">
                       {formData.destinations.map((dest, index) => (
                         <div key={index} className="bg-white p-3 rounded-lg border border-green-200">
                           <div className="flex items-center gap-2 mb-2 flex-wrap">
