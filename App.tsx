@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -501,29 +501,28 @@ export default function App() {
 
     setIsEstimating(true);
 
+    // Compute the 'from' address: previous leg endpoint or starting point of that day
+    const aiDayIdx = formData.destinations[idx]?.dayIndex ?? 0;
+    const sameDayDestsUpToHere = formData.destinations
+      .map((d, i) => ({ ...d, origIdx: i }))
+      .filter(d => (d.dayIndex ?? 0) === aiDayIdx && d.origIdx < idx);
+    let fromAddress: string;
+    if (sameDayDestsUpToHere.length > 0) {
+      fromAddress = sameDayDestsUpToHere[sameDayDestsUpToHere.length - 1].address || DEFAULT_ORIGIN;
+    } else if (aiDayIdx === 0) {
+      fromAddress = DEFAULT_ORIGIN;
+    } else {
+      const prevDayDests = formData.destinations.filter(d => (d.dayIndex ?? 0) === aiDayIdx - 1);
+      fromAddress = prevDayDests.length > 0 ? prevDayDests[prevDayDests.length - 1].address : DEFAULT_ORIGIN;
+    }
+
     try {
       const resp = await fetch('/api/ai-estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // Compute the 'from' address: previous leg endpoint or starting point of that day
-        const dayIdx = formData.destinations[idx]?.dayIndex ?? 0;
-        const sameDayDestsUpToHere = formData.destinations
-          .map((d, i) => ({ ...d, origIdx: i }))
-          .filter(d => (d.dayIndex ?? 0) === dayIdx && d.origIdx < idx);
-        let fromAddress: string;
-        if (sameDayDestsUpToHere.length > 0) {
-          fromAddress = sameDayDestsUpToHere[sameDayDestsUpToHere.length - 1].address || DEFAULT_ORIGIN;
-        } else {
-          // First destination of this day: use starting point
-          if (dayIdx === 0) {
-            fromAddress = DEFAULT_ORIGIN;
-          } else {
-            const prevDayDests = formData.destinations.filter(d => (d.dayIndex ?? 0) === dayIdx - 1);
-            fromAddress = prevDayDests.length > 0 ? prevDayDests[prevDayDests.length - 1].address : DEFAULT_ORIGIN;
-          }
-        }
-        body: JSON.stringify({ input: userInput, origin: fromAddress || DEFAULT_ORIGIN })
+        body: JSON.stringify({ input: userInput, origin: fromAddress })
       });
+
 
       if (!resp.ok) {
         const txt = await resp.text();
@@ -1432,7 +1431,7 @@ export default function App() {
                               </div>
                             </div>
                             {/* 出發點 + 今日目的地彙整 + 手動時數覆蓋 */}
-                            <div class="mt-3 space-y-3">
+                            <div className="mt-3 space-y-3">
                               {/* Starting point */}
                               <div>
                                 <label className="block text-xs font-medium text-indigo-700 mb-1">
@@ -1488,29 +1487,6 @@ export default function App() {
                                   />
                                   <span className="absolute right-3 top-1.5 text-slate-400 text-xs">小時</span>
                                 </div>
-                              </div>
-                            </div>
-                              <div>
-                                <label className="block text-xs font-medium text-indigo-700 mb-1">
-                                  當日行駛時數 <span className="text-red-400">*</span>
-                                </label>
-                                <div className="relative">
-                                  <input
-                                    type="number"
-                                    step="0.5"
-                                    min="0"
-                                    value={entry.drivingHours ?? ''}
-                                    onChange={(e) => handleDayEntryChange(index, 'drivingHours', Number(e.target.value))}
-                                    placeholder="0"
-                                    className="w-full pl-3 pr-10 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 text-sm"
-                                  />
-                                  <span className="absolute right-3 top-2 text-indigo-400 text-xs">小時</span>
-                                </div>
-                                {(entry.drivingHours ?? 0) > 0 && (
-                                  <p className="text-xs text-indigo-600 mt-1">
-                                    ≈ {formatCurrency(Math.floor((entry.drivingHours ?? 0) / 1.5) * 30)} 交通津貼
-                                  </p>
-                                )}
                               </div>
                             </div>
                           </div>
