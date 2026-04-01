@@ -110,7 +110,7 @@ export const PREDEFINED_LOCATIONS: Location[] = [
   { region: "台南", name: "台南空軍基地", hours: 1.5 },
   { region: "台南", name: "台南長安營區 (仁德智測站)", hours: 1.5 },
   { region: "台南", name: "台南市仁德區保仁路195號", hours: 1.5 },
-  { region: "花蓮", name: "七星潭 (經台東大學)", hours: 7.5 },
+  { region: "花蓮", name: "七星潭", hours: 4.5 },
   { region: "台東", name: "志航空軍基地 (台東市志航路三段)", hours: 4.5 },
 ];
 

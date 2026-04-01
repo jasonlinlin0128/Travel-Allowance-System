@@ -474,19 +474,27 @@ export default function App() {
     setFocusedDestinationIndex(0);
   };
 
-  const handleLocationSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleLocationSelect = (e: React.ChangeEvent<HTMLSelectElement>, destIndex: number) => {
     const selectedName = e.target.value;
-    if (!selectedName || selectedName === 'custom') return;
-
+    if (!selectedName || selectedName === 'custom') {
+      e.currentTarget.value = ''; // reset
+      return;
+    }
     const location = PREDEFINED_LOCATIONS.find(loc => loc.name === selectedName);
     if (location) {
       setFormData(prev => {
         const newDests = [...prev.destinations];
-        newDests[focusedDestinationIndex] = { address: location.name, oneWayHours: location.hours };
+        const existing = newDests[destIndex];
+        newDests[destIndex] = {
+          ...existing,
+          address: location.name,
+          oneWayHours: location.hours,
+        };
         const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
         return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
       });
     }
+    e.currentTarget.value = ''; // reset so placeholder shows again
   };
 
   // --- AI Estimation Logic ---
@@ -1216,34 +1224,35 @@ export default function App() {
                       </button>
                     </label>
 
-                    {/* Shared location quick-select */}
-                    <div className="mb-3 relative">
-                      <MapIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
-                      <select
-                        onChange={handleLocationSelect}
-                        className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-white rounded-lg text-sm text-slate-900 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer"
-                        defaultValue=""
-                      >
-                        <option value="" disabled>快速帶入常用地點 → 目的地 {focusedDestinationIndex + 1}...</option>
-                        {Object.keys(LOCATION_GROUPS).map(region => (
-                          <optgroup key={region} label={region}>
-                            {LOCATION_GROUPS[region].map(loc => (
-                              <option key={loc.name} value={loc.name}>
-                                {loc.name} ({loc.hours}H)
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                        <option value="custom">其他地點 (手動輸入)</option>
-                      </select>
-                      <div className="absolute right-3 top-3 pointer-events-none text-slate-400">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                      </div>
-                    </div>
+
 
                     <div className="space-y-3">
                       {formData.destinations.map((dest, index) => (
                         <div key={index} className="bg-white p-3 rounded-lg border border-green-200">
+                          {/* Per-destination quick-select */}
+                          <div className="mb-2 relative">
+                            <MapIcon className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                            <select
+                              value=""
+                              onChange={(e) => handleLocationSelect(e, index)}
+                              className="w-full pl-9 pr-8 py-1.5 border border-green-200 bg-green-50 rounded-lg text-xs text-slate-700 focus:ring-2 focus:ring-green-400 outline-none appearance-none cursor-pointer"
+                            >
+                              <option value="" disabled>快速帶入常用地點...</option>
+                              {Object.keys(LOCATION_GROUPS).map(region => (
+                                <optgroup key={region} label={region}>
+                                  {LOCATION_GROUPS[region].map(loc => (
+                                    <option key={loc.name} value={loc.name}>
+                                      {loc.name} ({loc.hours}H)
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                              <option value="custom">其他地點 (手動輸入)</option>
+                            </select>
+                            <div className="absolute right-2.5 top-2 pointer-events-none text-slate-400">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                            </div>
+                          </div>
                           <div className="flex items-center gap-2 mb-2 flex-wrap">
                             <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded">目的地 {index + 1}</span>
                             {dest.oneWayHours > 0 && (
