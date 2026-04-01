@@ -488,20 +488,27 @@ export default function App() {
         newDests[destIndex] = {
           ...existing,
           address: location.name,
-          oneWayHours: location.hours,
+          // For dest 0: use constant hours (company→place)
+          // For dest > 0: will be overwritten by AI estimate below
+          oneWayHours: destIndex === 0 ? location.hours : (existing.oneWayHours || 0),
         };
         const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
         return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
       });
+      // For dest > 0: auto-trigger AI to calculate leg time from previous destination
+      if (destIndex > 0) {
+        // Pass the selected name directly so we don't need to wait for state update
+        setTimeout(() => handleAIEstimate(destIndex, location.name), 50);
+      }
     }
     e.currentTarget.value = ''; // reset so placeholder shows again
   };
 
   // --- AI Estimation Logic ---
-  const handleAIEstimate = async (overrideIndex?: number) => {
+  const handleAIEstimate = async (overrideIndex?: number, userInputOverride?: string) => {
     const idx = overrideIndex ?? focusedDestinationIndex;
     const dest = formData.destinations[idx];
-    const userInput = dest?.address;
+    const userInput = userInputOverride || dest?.address;
     if (!userInput || userInput.trim() === '') {
       alert("請先輸入大概的地點名稱（例如：台積電南科）");
       return;
