@@ -437,7 +437,7 @@ export default function App() {
     setFormData(prev => {
       const newDests = [...prev.destinations];
       newDests[index] = { ...newDests[index], [field]: value };
-      const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+      const maxHours = newDests.reduce((s, d) => s + (d.oneWayHours || 0), 0);
       let newEntries = prev.dayEntries;
       if (prev.nights > 0 && (field === 'dayIndex' || field === 'address')) {
         newEntries = prev.dayEntries.map((entry, i) => {
@@ -468,7 +468,7 @@ export default function App() {
     if (formData.destinations.length <= 1) return;
     setFormData(prev => {
       const newDests = prev.destinations.filter((_, i) => i !== index);
-      const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+      const maxHours = newDests.reduce((s, d) => s + (d.oneWayHours || 0), 0);
       return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
     });
     setFocusedDestinationIndex(0);
@@ -492,7 +492,7 @@ export default function App() {
           // For dest > 0: will be overwritten by AI estimate below
           oneWayHours: destIndex === 0 ? location.hours : (existing.oneWayHours || 0),
         };
-        const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+        const maxHours = newDests.reduce((s, d) => s + (d.oneWayHours || 0), 0);
         return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
       });
       // For dest > 0: auto-trigger AI to calculate leg time from previous destination
@@ -554,7 +554,7 @@ export default function App() {
           address: result.fullAddress || dest.address,
           oneWayHours: result.hours || dest.oneWayHours
         };
-        const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
+        const maxHours = newDests.reduce((s, d) => s + (d.oneWayHours || 0), 0);
         return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
       });
 
@@ -1372,7 +1372,7 @@ export default function App() {
                         <span className="absolute right-3 top-2 text-slate-500 text-sm">小時</span>
                       </div>
                       <p className="text-xs text-slate-500 mt-1">
-                        自動取最遠: {Math.max(...formData.destinations.map(d => d.oneWayHours), 0)}H，每1.5小時補助$30
+                        自動加總所有段: {formData.destinations.reduce((s, d) => s + (d.oneWayHours || 0), 0)}H，每1.5小時補助$30
                       </p>
                     </div>
 
