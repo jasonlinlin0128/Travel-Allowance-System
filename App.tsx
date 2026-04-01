@@ -112,7 +112,7 @@ export default function App() {
   }>({
     applicants: [''],
     reason: '',
-    destinations: [{ address: '', oneWayHours: 0 }],
+    destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }],
     effectiveOneWayHours: 0,
     date: new Date().toISOString().split('T')[0],
     startTime: '08:00',
@@ -276,7 +276,7 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem('travel_app_user');
-    setFormData(prev => ({ ...prev, applicants: [''], destinations: [{ address: '', oneWayHours: 0 }], effectiveOneWayHours: 0 }));
+    setFormData(prev => ({ ...prev, applicants: [''], destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }], effectiveOneWayHours: 0 }));
     setActiveTab('form'); // Reset tab to avoid staying on admin page
   };
 
@@ -321,15 +321,22 @@ export default function App() {
     }
 
     // 2. Travel Allowance (Car)
-    // Multi-day: each day's drivingHours contributes per leg (no global x2)
+    // Multi-day: sum each day's legs (destinations filtered by dayIndex), or manual drivingHours override
     // Single-day: effectiveOneWayHours x2 (round trip)
     const oneWayHours = formData.effectiveOneWayHours;
     const units = Math.floor(oneWayHours / 1.5);
     const singleTripAllowance = units * 30;
     if (formData.nights > 0 && formData.dayEntries.length > 0) {
-      carTotalAllowance = formData.dayEntries.reduce((sum, entry) => {
-        const h = entry.drivingHours ?? 0;
-        return sum + Math.floor(h / 1.5) * 30;
+      carTotalAllowance = formData.dayEntries.reduce((sum, entry, dayIdx) => {
+        // If user has manually set drivingHours, use it; otherwise sum all legs for this day
+        let dayHours: number;
+        if (entry.drivingHours !== undefined && entry.drivingHours > 0) {
+          dayHours = entry.drivingHours;
+        } else {
+          const dayDests = formData.destinations.filter(d => (d.dayIndex ?? 0) === dayIdx);
+          dayHours = dayDests.reduce((h, d) => h + (d.oneWayHours || 0), 0);
+        }
+        return sum + Math.floor(dayHours / 1.5) * 30;
       }, 0);
     } else {
       carTotalAllowance = singleTripAllowance * 2;
@@ -388,7 +395,7 @@ export default function App() {
     }));
   };
 
-  const handleDayEntryChange = (index: number, field: 'startTime' | 'endTime' | 'drivingHours' | 'destinations', value: string | number) => {
+  const handleDayEntryChange = (index: number, field: 'startTime' | 'endTime' | 'drivingHours' | 'startingPoint', value: string | number) => {
     setFormData(prev => {
       const newEntries = [...prev.dayEntries];
       newEntries[index] = { ...newEntries[index], [field]: value };
@@ -409,10 +416,15 @@ export default function App() {
           if (prev.dayEntries[i]) {
             return { ...prev.dayEntries[i], date: addDays(prev.date, i) };
           }
+          const prevDayDests = prev.destinations.filter(d => (d.dayIndex ?? 0) === i - 1);
+          const autoStartingPoint = i === 0
+            ? DEFAULT_ORIGIN
+            : prevDayDests.length > 0 ? prevDayDests[prevDayDests.length - 1].address : DEFAULT_ORIGIN;
           return {
             date: addDays(prev.date, i),
             startTime: i === 0 ? prev.startTime : '08:00',
             endTime: i === totalDays - 1 ? prev.endTime : '17:00',
+            startingPoint: autoStartingPoint,
           };
         });
       }
@@ -426,14 +438,28 @@ export default function App() {
       const newDests = [...prev.destinations];
       newDests[index] = { ...newDests[index], [field]: value };
       const maxHours = Math.max(...newDests.map(d => d.oneWayHours), 0);
-      return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours };
+      let newEntries = prev.dayEntries;
+      if (prev.nights > 0 && (field === 'dayIndex' || field === 'address')) {
+        newEntries = prev.dayEntries.map((entry, i) => {
+          if (i === 0) return entry;
+          const oldPrevDests = prev.destinations.filter(d => (d.dayIndex ?? 0) === i - 1);
+          const oldAutoSP = oldPrevDests.length > 0 ? oldPrevDests[oldPrevDests.length - 1].address : DEFAULT_ORIGIN;
+          const newPrevDests = newDests.filter(d => (d.dayIndex ?? 0) === i - 1);
+          const newAutoSP = newPrevDests.length > 0 ? newPrevDests[newPrevDests.length - 1].address : DEFAULT_ORIGIN;
+          if (!entry.startingPoint || entry.startingPoint === oldAutoSP) {
+            return { ...entry, startingPoint: newAutoSP };
+          }
+          return entry;
+        });
+      }
+      return { ...prev, destinations: newDests, effectiveOneWayHours: maxHours, dayEntries: newEntries };
     });
   };
 
   const addDestination = () => {
     setFormData(prev => ({
       ...prev,
-      destinations: [...prev.destinations, { address: '', oneWayHours: 0 }],
+      destinations: [...prev.destinations, { address: '', oneWayHours: 0, dayIndex: 0 }],
     }));
     setFocusedDestinationIndex(formData.destinations.length);
   };
@@ -479,7 +505,24 @@ export default function App() {
       const resp = await fetch('/api/ai-estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: userInput, origin: DEFAULT_ORIGIN })
+        // Compute the 'from' address: previous leg endpoint or starting point of that day
+        const dayIdx = formData.destinations[idx]?.dayIndex ?? 0;
+        const sameDayDestsUpToHere = formData.destinations
+          .map((d, i) => ({ ...d, origIdx: i }))
+          .filter(d => (d.dayIndex ?? 0) === dayIdx && d.origIdx < idx);
+        let fromAddress: string;
+        if (sameDayDestsUpToHere.length > 0) {
+          fromAddress = sameDayDestsUpToHere[sameDayDestsUpToHere.length - 1].address || DEFAULT_ORIGIN;
+        } else {
+          // First destination of this day: use starting point
+          if (dayIdx === 0) {
+            fromAddress = DEFAULT_ORIGIN;
+          } else {
+            const prevDayDests = formData.destinations.filter(d => (d.dayIndex ?? 0) === dayIdx - 1);
+            fromAddress = prevDayDests.length > 0 ? prevDayDests[prevDayDests.length - 1].address : DEFAULT_ORIGIN;
+          }
+        }
+        body: JSON.stringify({ input: userInput, origin: fromAddress || DEFAULT_ORIGIN })
       });
 
       if (!resp.ok) {
@@ -616,7 +659,7 @@ export default function App() {
         ...prev,
         applicants: [currentUser.name],
         reason: '',
-        destinations: [{ address: '', oneWayHours: 0 }],
+        destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }],
         effectiveOneWayHours: 0,
         startTime: '08:00',
         endTime: '17:00',
@@ -1199,17 +1242,30 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="space-y-3">
+                    <div class="space-y-3">
                       {formData.destinations.map((dest, index) => (
                         <div key={index} className="bg-white p-3 rounded-lg border border-green-200">
-                          <div className="flex items-center gap-2 mb-2">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
                             <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-0.5 rounded">目的地 {index + 1}</span>
                             {dest.oneWayHours > 0 && (
-                              <span className="text-xs text-slate-400">單程 {dest.oneWayHours}H</span>
+                              <span className="text-xs text-slate-400">此段 {dest.oneWayHours}H</span>
+                            )}
+                            {/* Day selector — only shown for multi-day trips */}
+                            {formData.nights > 0 && (
+                              <select
+                                value={dest.dayIndex ?? 0}
+                                onChange={(e) => handleDestinationChange(index, 'dayIndex', Number(e.target.value))}
+                                className="ml-auto text-xs border border-indigo-200 rounded-md px-2 py-1 bg-indigo-50 text-indigo-700 font-semibold focus:ring-2 focus:ring-indigo-300 outline-none cursor-pointer"
+                                title="指定出差日"
+                              >
+                                {Array.from({ length: formData.nights + 1 }, (_, d) => (
+                                  <option key={d} value={d}>出差日 {d + 1}</option>
+                                ))}
+                              </select>
                             )}
                             {formData.destinations.length > 1 && (
                               <button type="button" onClick={() => removeDestination(index)}
-                                className="ml-auto p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors">
+                                className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors">
                                 <Trash2 className="w-4 h-4" />
                               </button>
                             )}
@@ -1231,7 +1287,7 @@ export default function App() {
                                 onClick={() => { setFocusedDestinationIndex(index); handleAIEstimate(index); }}
                                 disabled={isEstimating}
                                 className="absolute right-1.5 top-1.5 bottom-1.5 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-colors border border-indigo-200"
-                                title="使用 AI 估算車程"
+                                title="使用 AI 估算此段車程（起點為上一地點）"
                               >
                                 {isEstimating && focusedDestinationIndex === index ? (
                                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -1375,20 +1431,65 @@ export default function App() {
                                 )}
                               </div>
                             </div>
-                            {/* 當日路線與行駛時數 */}
-                            <div className="mt-3 grid grid-cols-2 gap-3">
+                            {/* 出發點 + 今日目的地彙整 + 手動時數覆蓋 */}
+                            <div class="mt-3 space-y-3">
+                              {/* Starting point */}
                               <div>
                                 <label className="block text-xs font-medium text-indigo-700 mb-1">
-                                  當日路線 <span className="text-indigo-400 font-normal">(選填)</span>
+                                  當天出發點 <span className="text-indigo-400 font-normal">（自動帶入，可手動修改）</span>
                                 </label>
                                 <input
                                   type="text"
-                                  value={entry.destinations || ''}
-                                  onChange={(e) => handleDayEntryChange(index, 'destinations', e.target.value)}
-                                  placeholder="e.g. 公司→淡水→花蓮"
+                                  value={entry.startingPoint ?? (index === 0 ? '北斗公司' : '')}
+                                  onChange={(e) => handleDayEntryChange(index, 'startingPoint', e.target.value)}
+                                  placeholder={index === 0 ? '北斗公司' : '上一天最後目的地'}
                                   className="w-full px-3 py-2 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-400 outline-none bg-white text-slate-900 text-sm"
                                 />
                               </div>
+                              {/* Today's assigned destinations */}
+                              {(() => {
+                                const todayDests = formData.destinations.filter(d => (d.dayIndex ?? 0) === index);
+                                const todayHours = todayDests.reduce((h, d) => h + (d.oneWayHours || 0), 0);
+                                return (
+                                  <div className="bg-indigo-100/60 rounded-lg p-2">
+                                    <p className="text-xs font-medium text-indigo-700 mb-1">今日行程（共 {todayDests.length} 段）</p>
+                                    {todayDests.length === 0 ? (
+                                      <p className="text-xs text-slate-400 italic">尚未在「出差地點」指定出差日 {index + 1} 的目的地</p>
+                                    ) : (
+                                      <div className="space-y-1">
+                                        {todayDests.map((d, di) => (
+                                          <div key={di} className="flex items-center gap-2 text-xs text-slate-700">
+                                            <span className="text-indigo-400">▸</span>
+                                            <span className="flex-1">{d.address || '（未填地址）'}</span>
+                                            <span className="text-slate-400 shrink-0">{d.oneWayHours}H</span>
+                                          </div>
+                                        ))}
+                                        <div className="border-t border-indigo-200 mt-1 pt-1 flex justify-between text-xs">
+                                          <span className="text-indigo-600 font-medium">合計行駛時數</span>
+                                          <span className="text-indigo-800 font-bold">{todayHours}H → ≈ {formatCurrency(Math.floor(todayHours / 1.5) * 30)} 津貼</span>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                              {/* Manual override */}
+                              <div className="flex items-center gap-2">
+                                <label className="text-xs text-slate-400 shrink-0">手動覆蓋時數：</label>
+                                <div className="relative flex-1">
+                                  <input
+                                    type="number"
+                                    step="0.5"
+                                    min="0"
+                                    value={entry.drivingHours ?? ''}
+                                    onChange={(e) => handleDayEntryChange(index, 'drivingHours', Number(e.target.value))}
+                                    placeholder="留空則使用上方計算值"
+                                    className="w-full pl-3 pr-10 py-1.5 border border-dashed border-slate-300 rounded-lg focus:ring-1 focus:ring-indigo-300 outline-none bg-white/70 text-slate-700 text-xs"
+                                  />
+                                  <span className="absolute right-3 top-1.5 text-slate-400 text-xs">小時</span>
+                                </div>
+                              </div>
+                            </div>
                               <div>
                                 <label className="block text-xs font-medium text-indigo-700 mb-1">
                                   當日行駛時數 <span className="text-red-400">*</span>
@@ -1927,6 +2028,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 

@@ -11,15 +11,16 @@ export interface Employee {
 
 export interface Destination {
   address: string;
-  oneWayHours: number;
+  oneWayHours: number; // for multi-day: hours for this leg; for single-day: hours from origin
+  dayIndex?: number;   // 0-indexed day assignment (only used when nights > 0)
 }
 
 export interface DayEntry {
-  date: string;      // YYYY-MM-DD
-  startTime: string; // HH:MM
-  endTime: string;   // HH:MM
-  destinations?: string; // 當日路線備註 e.g. "公司→淡水→花蓮"
-  drivingHours?: number; // 當日實際行駛時數（單程小時）
+  date: string;          // YYYY-MM-DD
+  startTime: string;     // HH:MM
+  endTime: string;       // HH:MM
+  startingPoint?: string; // 當天出發點（自動帶入前一天最後目的地，可手動修改）
+  drivingHours?: number;  // 手動覆蓋行駛時數（若未填則由 destinations.dayIndex 計算）
 }
 
 export interface TravelRequest {
