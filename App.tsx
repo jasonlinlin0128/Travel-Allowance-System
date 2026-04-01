@@ -368,7 +368,7 @@ export default function App() {
       singleTripAllowance,
     };
 
-  }, [formData.startTime, formData.endTime, formData.effectiveOneWayHours, formData.applicants.length, formData.nights, formData.dayEntries]);
+  }, [formData.startTime, formData.endTime, formData.effectiveOneWayHours, formData.applicants.length, formData.nights, formData.dayEntries, formData.destinations]);
 
   // --- Handlers ---
   const handleApplicantChange = (index: number, value: string) => {
@@ -1356,8 +1356,10 @@ export default function App() {
                   
                   {/* 過夜天數 + 單趟車程 */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Only show manual hours override for single-day (multi-day uses per-day card) */}
+                    {formData.nights === 0 && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1">單趟車程 (取最遠, 可手動覆蓋)</label>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">總車程時數（各段加總，可手動覆蓋）</label>
                       <div className="relative">
                         <input
                           required
@@ -1375,6 +1377,7 @@ export default function App() {
                         自動加總所有段: {formData.destinations.reduce((s, d) => s + (d.oneWayHours || 0), 0)}H，每1.5小時補助$30
                       </p>
                     </div>
+                    )}
 
                     <div>
                       <label className="block text-sm font-medium text-slate-700 mb-1">過夜天數</label>
@@ -1625,7 +1628,7 @@ export default function App() {
                         <div>各天行駛時數加總 = {formatCurrency(calculation.travelTotal)}</div>
                       ) : (
                         <>
-                          <div>單程 {formData.effectiveOneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
+                          <div>各段加總 {formData.effectiveOneWayHours}H ÷ 1.5 = {calculation.travelUnits} 單位 × $30 = {formatCurrency(calculation.singleTripAllowance)}/趟</div>
                           <div>來回: {formatCurrency(calculation.singleTripAllowance)} × 2 = {formatCurrency(calculation.travelTotal)}</div>
                         </>
                       )}
