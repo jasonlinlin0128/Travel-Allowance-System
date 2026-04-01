@@ -18,11 +18,12 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY is not configured' });
     }
 
-    const originParam = origin && typeof origin === 'string' ? origin : '';
+    const COMPANY_ORIGIN = "彰化縣北斗鎮四海路二段79號";
+    const originParam = origin && typeof origin === 'string' && origin.trim() ? origin.trim() : COMPANY_ORIGIN;
 
     // Try Directions API first (gives travel time)
     const directionsParams = new URLSearchParams({
-      origin: originParam || input,
+      origin: originParam,
       destination: input,
       key,
       mode: 'driving',

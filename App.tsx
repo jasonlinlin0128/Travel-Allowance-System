@@ -524,6 +524,8 @@ export default function App() {
       fromAddress = prevDayDests.length > 0 ? prevDayDests[prevDayDests.length - 1].address : DEFAULT_ORIGIN;
     }
 
+    console.log(`[AI] dest[${idx}] "${userInput}", from: "${fromAddress}", dayIdx: ${aiDayIdx}, sameDayBefore: ${sameDayDestsUpToHere.length}`);
+
     try {
       const resp = await fetch('/api/ai-estimate', {
         method: 'POST',
@@ -541,6 +543,7 @@ export default function App() {
       setFormData(prev => {
         const newDests = [...prev.destinations];
         newDests[idx] = {
+          ...newDests[idx],                              // ← preserve dayIndex and other fields
           address: result.fullAddress || dest.address,
           oneWayHours: result.hours || dest.oneWayHours
         };
