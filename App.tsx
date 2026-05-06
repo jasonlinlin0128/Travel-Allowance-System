@@ -229,8 +229,18 @@ export default function App() {
     const unsubscribeSnapshot = onSnapshot(q, (snapshot: any) => {
       const docs = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as TravelRequest));
       setHistory(docs);
+      // 成功讀回就清掉之前的錯誤訊息
+      setAuthError(null);
     }, (error: any) => {
       console.error("Firestore Error:", error);
+      // 失敗時顯示給使用者（取代之前只 console，畫面一片空白沒提示）
+      const code = error?.code || '';
+      const msg = code === 'permission-denied'
+        ? '無權限讀取資料庫，請聯絡系統管理員確認 Firestore 規則。'
+        : code === 'unavailable'
+        ? '資料庫暫時無法連線，請檢查網路後再試。'
+        : `資料庫讀取失敗：${error?.message || code || '未知錯誤'}`;
+      setAuthError(msg);
     });
     
     return () => unsubscribeSnapshot();
@@ -597,7 +607,10 @@ export default function App() {
       applicants: record.applicants || [currentUser!.name],
       reason: record.reason || '',
       date: record.date || new Date().toISOString().split('T')[0],
-      destinations: record.destinations || [{ address: record.destination || '', oneWayHours: record.oneWayHours || record.effectiveOneWayHours || 0 }],
+      // legacy 紀錄沒 destinations 陣列：用 destination 字串建單一目的地，補 dayIndex=0 與多日邏輯一致
+      destinations: record.destinations
+        ? record.destinations.map(d => ({ ...d, dayIndex: d.dayIndex ?? 0 }))
+        : [{ address: record.destination || '', oneWayHours: record.oneWayHours || record.effectiveOneWayHours || 0, dayIndex: 0 }],
       effectiveOneWayHours: record.effectiveOneWayHours || record.oneWayHours || 0,
       startTime: record.startTime || '08:00',
       endTime: record.endTime || '17:00',
@@ -663,12 +676,22 @@ export default function App() {
       };
 
       if (isDemoMode) {
-        // LocalStorage Save
-        const newDoc = { ...payload, id: 'local-' + Date.now() };
-        const updatedHistory = [newDoc, ...history];
-        setHistory(updatedHistory);
-        localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updatedHistory));
-        await new Promise(resolve => setTimeout(resolve, 600)); 
+        // LocalStorage Save (含編輯路徑)
+        if (editingRecordId) {
+          // UPDATE existing local record（之前 demo mode 的編輯會跑成新增=重複，這裡修正）
+          const updatedHistory = history.map(rec =>
+            rec.id === editingRecordId ? { ...payload, id: editingRecordId } : rec
+          );
+          setHistory(updatedHistory);
+          localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updatedHistory));
+        } else {
+          // ADD new
+          const newDoc = { ...payload, id: 'local-' + Date.now() };
+          const updatedHistory = [newDoc, ...history];
+          setHistory(updatedHistory);
+          localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updatedHistory));
+        }
+        await new Promise(resolve => setTimeout(resolve, 600));
       } else {
         // Firebase Save
         // Remove any undefined values - Firestore rejects them
@@ -690,11 +713,15 @@ export default function App() {
         if (editingRecordId) {
           // UPDATE existing record
           await updateDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', editingRecordId), cleanPayload);
-          setEditingRecordId(null);
         } else {
           // ADD new record
           await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances'), cleanPayload);
         }
+      }
+      // 編輯狀態統一在 try 結束前清掉（不論 demo / production）
+      // 避免後續再送出時誤判為仍在編輯
+      if (editingRecordId) {
+        setEditingRecordId(null);
       }
       
       setFormData(prev => ({
@@ -1560,7 +1587,18 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        
+
+        {/* 連線/讀取資料失敗時顯示給使用者 */}
+        {authError && !isDemoMode && (
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <div className="text-sm">
+              <div className="font-semibold mb-0.5">資料庫連線異常</div>
+              <div className="text-xs text-red-600">{authError}</div>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'form' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Left: The Form */}
