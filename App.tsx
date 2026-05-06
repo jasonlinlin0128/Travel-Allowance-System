@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, Fragment } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -188,6 +188,9 @@ export default function App() {
   const [duplicateWarning, setDuplicateWarning] = useState<DuplicateMatch[] | null>(null);
   const [duplicateConfirmCheck, setDuplicateConfirmCheck] = useState(false);
 
+  // 表單 dirty 偵測 baseline ref（formData 宣告前先放 ref，等 formData state 建好後再算 isFormDirty）
+  const baselineRef = useRef<string>('');
+
   // Form State
   const [formData, setFormData] = useState<{
     applicants: string[];
@@ -210,6 +213,14 @@ export default function App() {
     nights: 0,
     dayEntries: [],
   });
+
+  // 表單 dirty 偵測（baseline 用 ref 避免 setState 觸發 re-render）
+  // formData 改變後，render 時 JSON.stringify 跟 baselineRef.current 比對 → isFormDirty
+  const captureBaseline = (data: typeof formData) => {
+    baselineRef.current = JSON.stringify(data);
+  };
+  // 此 render 是否 dirty（baseline 為空 = 初始未抓 baseline，不算 dirty 避免誤判）
+  const isFormDirty = baselineRef.current !== '' && JSON.stringify(formData) !== baselineRef.current;
 
   // Track which destination is focused for location selector / AI estimate
   const [focusedDestinationIndex, setFocusedDestinationIndex] = useState(0);
@@ -246,10 +257,12 @@ export default function App() {
   // Update applicant list when user logs in
   useEffect(() => {
     if (currentUser) {
-      setFormData(prev => ({
-        ...prev,
-        applicants: [currentUser.name] // Auto-fill logged in user
-      }));
+      setFormData(prev => {
+        const next = { ...prev, applicants: [currentUser.name] };
+        // 登入後重置 baseline → 新填內容才算 dirty
+        captureBaseline(next);
+        return next;
+      });
     }
   }, [currentUser]);
 
@@ -376,9 +389,37 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     localStorage.removeItem('travel_app_user');
-    setFormData(prev => ({ ...prev, applicants: [''], destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }], effectiveOneWayHours: 0 }));
+    setFormData(prev => {
+      const next = { ...prev, applicants: [''], destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }], effectiveOneWayHours: 0 };
+      captureBaseline(next);  // 登出 = 乾淨重置，不要殘留 dirty 狀態
+      return next;
+    });
     setActiveTab('form'); // Reset tab to avoid staying on admin page
   };
+
+  // 切標籤前若 form 有未存變更 → 跳 confirm（軟擋，使用者可放棄變更繼續切）
+  // 內部 setActiveTab 呼叫（login / logout / submit / edit-load）走原生 setActiveTab，因為
+  // 那些情境的 dirty 狀態都已 captureBaseline 清掉了
+  const handleTabChange = (newTab: 'form' | 'my_history' | 'admin') => {
+    if (activeTab === 'form' && newTab !== 'form' && isFormDirty) {
+      const ok = window.confirm('表單有未儲存的變更，確定要切換頁籤？變更會遺失。');
+      if (!ok) return;
+      // 使用者放棄變更：清掉 baseline 不重要，反正回到 form 還是 dirty。但下次切回不會再問同一筆。
+    }
+    setActiveTab(newTab);
+  };
+
+  // 關瀏覽器 / 重新整理時警告（瀏覽器原生對話框，custom message 已被 modern browser 忽略）
+  useEffect(() => {
+    if (!isFormDirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; // legacy
+      return '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [isFormDirty]);
 
   // --- Business Logic Calculation ---
   const calculation: CalculationResult = useMemo(() => {
@@ -668,7 +709,7 @@ export default function App() {
 
   // --- Edit Record ---
   const handleEditRecord = (record: TravelRequest) => {
-    setFormData({
+    const loaded = {
       applicants: record.applicants || [currentUser!.name],
       reason: record.reason || '',
       date: record.date || new Date().toISOString().split('T')[0],
@@ -681,7 +722,9 @@ export default function App() {
       endTime: record.endTime || '17:00',
       nights: record.nights || 0,
       dayEntries: record.dayEntries || [],
-    });
+    };
+    setFormData(loaded);
+    captureBaseline(loaded);   // 編輯載入後 = 乾淨狀態
     setEditingRecordId(record.id!);
     setActiveTab('form');
     window.scrollTo(0, 0);
@@ -809,17 +852,21 @@ export default function App() {
         setEditingRecordId(null);
       }
       
-      setFormData(prev => ({
-        ...prev,
-        applicants: [currentUser.name],
-        reason: '',
-        destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }],
-        effectiveOneWayHours: 0,
-        startTime: '08:00',
-        endTime: '17:00',
-        nights: 0,
-        dayEntries: [],
-      }));
+      setFormData(prev => {
+        const next = {
+          ...prev,
+          applicants: [currentUser.name],
+          reason: '',
+          destinations: [{ address: '', oneWayHours: 0, dayIndex: 0 }],
+          effectiveOneWayHours: 0,
+          startTime: '08:00',
+          endTime: '17:00',
+          nights: 0,
+          dayEntries: [],
+        };
+        captureBaseline(next);  // 送出成功 = 乾淨狀態
+        return next;
+      });
 
       // 清掉重複警告 modal 的狀態（即便 modal 不在開啟中也安全清）
       setDuplicateWarning(null);
@@ -1700,34 +1747,37 @@ export default function App() {
 
           {/* Navigation Tabs */}
           <div className="flex gap-1 overflow-x-auto">
-            <button 
-              onClick={() => setActiveTab('form')}
+            <button
+              onClick={() => handleTabChange('form')}
               className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap
-                ${activeTab === 'form' 
-                  ? 'bg-slate-50 text-blue-900' 
+                ${activeTab === 'form'
+                  ? 'bg-slate-50 text-blue-900'
                   : 'bg-blue-800/50 text-blue-100 hover:bg-blue-800'}`}
             >
               <FileText className="w-4 h-4" />
               申請表單
+              {isFormDirty && (
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400" title="表單有未儲存變更" />
+              )}
             </button>
-            <button 
-              onClick={() => setActiveTab('my_history')}
+            <button
+              onClick={() => handleTabChange('my_history')}
               className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap
-                ${activeTab === 'my_history' 
-                  ? 'bg-slate-50 text-blue-900' 
+                ${activeTab === 'my_history'
+                  ? 'bg-slate-50 text-blue-900'
                   : 'bg-blue-800/50 text-blue-100 hover:bg-blue-800'}`}
             >
               <History className="w-4 h-4" />
               個人紀錄 ({myHistory.length})
             </button>
-            
+
             {/* Admin Tab - Only visible to specific admin ID */}
             {currentUser.id === ADMIN_ID && (
-              <button 
-                onClick={() => setActiveTab('admin')}
+              <button
+                onClick={() => handleTabChange('admin')}
                 className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors flex items-center gap-2 whitespace-nowrap ml-auto
-                  ${activeTab === 'admin' 
-                    ? 'bg-slate-50 text-blue-900' 
+                  ${activeTab === 'admin'
+                    ? 'bg-slate-50 text-blue-900'
                     : 'bg-blue-950 text-blue-200 hover:bg-blue-800'}`}
               >
                 <ShieldCheck className="w-4 h-4" />
