@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { 
   signInAnonymously, 
   onAuthStateChanged,
@@ -28,7 +28,8 @@ import {
   Sparkles,
   Loader2,
   Download,
-  Calendar
+  Calendar,
+  ChevronRight
 } from 'lucide-react';
 
 // Removed direct import of @google/generative-ai to avoid bundling issues on Vercel.
@@ -65,6 +66,19 @@ const addDays = (dateStr: string, days: number): string => {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 };
 
+// 一天疲勞津貼（每人）：早出 ≤05:00 +200/0.5h；晚歸 >21:00 +200/0.5h
+const calcDayFatigueAmount = (startTime: string, endTime: string): number => {
+  if (!startTime || !endTime) return 0;
+  const [sh, sm] = startTime.split(':').map(Number);
+  const [eh, em] = endTime.split(':').map(Number);
+  const startDec = sh + sm / 60;
+  const endDec = eh + em / 60;
+  let f = 0;
+  if (startDec <= 5) f += Math.floor((8 - startDec) * 2) / 2 * 200;
+  if (endDec > 21) f += Math.floor((endDec - 21) * 2) / 2 * 200;
+  return f;
+};
+
 export default function App() {
   // Auth State
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -97,6 +111,17 @@ export default function App() {
   const [adminFilterMode, setAdminFilterMode] = useState<'all' | 'year' | 'month' | 'day'>('all');
   const [adminFilterValue, setAdminFilterValue] = useState('');
   const [adminFilterKeyword, setAdminFilterKeyword] = useState('');
+
+  // Admin: 哪幾筆紀錄目前展開明細（多筆可同時展開以利比對）
+  const [expandedAdminRows, setExpandedAdminRows] = useState<Set<string>>(new Set());
+  const toggleAdminRow = (id: string) => {
+    setExpandedAdminRows(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Form State
   const [formData, setFormData] = useState<{
@@ -718,6 +743,25 @@ export default function App() {
     return `${y}/${mo}/${d} ${h}:${mi}`;
   };
 
+  // 取出整筆紀錄的「實際出發」與「實際結束」時間（含日期，方案 B 格式）
+  // 多日：dayEntries[0] / dayEntries[last]；單日：record.startTime / endTime
+  const getTripTimes = (item: TravelRequest): { start: string; end: string } => {
+    const ymdToShort = (ymd: string) => ymd.slice(5).replace('-', '/'); // "2026-04-13" → "04/13"
+    if (item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0) {
+      const first = item.dayEntries[0];
+      const last = item.dayEntries[item.dayEntries.length - 1];
+      const lastDate = addDays(item.date, item.nights);
+      return {
+        start: `${ymdToShort(item.date)} ${first?.startTime || '--:--'}`,
+        end: `${ymdToShort(lastDate)} ${last?.endTime || '--:--'}`,
+      };
+    }
+    return {
+      start: `${ymdToShort(item.date)} ${item.startTime || '--:--'}`,
+      end: `${ymdToShort(item.date)} ${item.endTime || '--:--'}`,
+    };
+  };
+
   const applyRecordFilter = (
     records: TravelRequest[],
     mode: 'all' | 'year' | 'month' | 'day',
@@ -773,18 +817,6 @@ export default function App() {
     // 過夜津貼方案 X：「當晚住=當天計」→ 第 0..nights-1 天各 $300，最後一天回程 0
     // 跨月份方案 X：4/29-5/2 紀錄整筆歸 4 月匯出，但 5/1、5/2 仍以實際日期顯示
     // 高鐵情境：destinations 不填或 0h → 車程自動 0，疲勞/過夜照 dayEntries / nights 計
-    const calcDayFatigueAmount = (startTime: string, endTime: string): number => {
-      if (!startTime || !endTime) return 0;
-      const [sh, sm] = startTime.split(':').map(Number);
-      const [eh, em] = endTime.split(':').map(Number);
-      const startDec = sh + sm / 60;
-      const endDec = eh + em / 60;
-      let f = 0;
-      if (startDec <= 5) f += Math.floor((8 - startDec) * 2) / 2 * 200;
-      if (endDec > 21) f += Math.floor((endDec - 21) * 2) / 2 * 200;
-      return f;
-    };
-
     const expandRecordPerDay = (record: TravelRequest): { date: string; fatigue: number; travel: number; overnight: number }[] => {
       const headcount = record.passengers || record.applicants?.length || 1;
 
@@ -1142,6 +1174,318 @@ export default function App() {
 
   const filteredMyHistory = applyRecordFilter(myHistory, myFilterMode, myFilterValue, myFilterKeyword);
   const filteredAdminHistory = applyRecordFilter(history, adminFilterMode, adminFilterValue, adminFilterKeyword);
+
+  // 取得星期幾單字（用於 Excel 與展開明細）
+  const getWeekday = (ymd: string): string => {
+    const [yy, mm, dd] = ymd.split('-').map(Number);
+    const dt = new Date(yy, mm - 1, dd);
+    return ['日', '一', '二', '三', '四', '五', '六'][dt.getDay()];
+  };
+
+  // 後台展開明細卡片：總務點 chevron 後顯示完整出差資訊以利覆核
+  const AdminRecordDetail = ({ item }: { item: TravelRequest }) => {
+    const isMultiDay = !!(item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0);
+    const headcount = item.passengers || item.applicants?.length || 1;
+
+    return (
+      <div className="space-y-5">
+        {/* 基本資訊：3 張 icon 卡 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="bg-white rounded-lg border border-blue-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-blue-700 font-medium mb-1.5">
+              <Calendar className="w-3.5 h-3.5" />
+              出差期間
+            </div>
+            <div className="font-medium text-slate-800 text-sm">
+              <span className="font-mono">{item.date}</span>
+              {isMultiDay && (
+                <>
+                  <span className="text-slate-400 mx-1">~</span>
+                  <span className="font-mono">{addDays(item.date, item.nights!)}</span>
+                  <span className="ml-2 inline-block px-2 py-0.5 text-[11px] font-semibold text-blue-700 bg-blue-100 rounded-full">
+                    {item.nights! + 1}天{item.nights}夜
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg border border-blue-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-blue-700 font-medium mb-1.5">
+              <UserCircle className="w-3.5 h-3.5" />
+              提交人 / 出差人員
+            </div>
+            <div className="text-sm">
+              <div className="font-medium text-slate-800">
+                {item.submitterName || '未知'}
+                <span className="text-slate-400 text-xs ml-1">({item.submitterId})</span>
+              </div>
+              <div className="text-xs text-slate-600 mt-0.5">
+                申請人：{item.applicants?.join('、') || 'N/A'}
+                <span className="ml-1 text-slate-400">共 {headcount} 人</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg border border-blue-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-blue-700 font-medium mb-1.5">
+              <FileText className="w-3.5 h-3.5" />
+              申請事由
+            </div>
+            <div className="text-sm font-medium text-slate-800 break-words">
+              {item.reason || <span className="text-slate-400 italic">(未填)</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* 多日逐日明細表 */}
+        {isMultiDay ? (
+          <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+            <div className="flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
+              <Clock className="w-4 h-4 text-slate-600" />
+              <span className="text-sm font-semibold text-slate-700">逐日明細</span>
+              <span className="text-xs text-slate-400">（總務可逐日覆核）</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">天數</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">日期</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">起點</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">出發</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">結束</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap font-medium">行駛時數</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">當天目的地</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap font-medium border-l border-slate-200 bg-amber-50/40">疲勞</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap font-medium bg-sky-50/40">車程</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap font-medium bg-violet-50/40">過夜</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap font-bold text-blue-700 bg-blue-50/60">當日合計</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {item.dayEntries!.map((entry, i) => {
+                    const dateStr = addDays(item.date, i);
+                    const isFirst = i === 0;
+                    const isLast = i === item.nights;
+                    const dayLabel = isFirst ? '出發日' : isLast ? '返回日' : `第 ${i + 1} 天`;
+                    const dayDests = (item.destinations || []).filter(d => (d.dayIndex ?? 0) === i);
+                    const autoHours = dayDests.reduce((h, d) => h + (d.oneWayHours || 0), 0);
+                    const manualHours = entry?.drivingHours;
+                    const usedHours = manualHours !== undefined && manualHours > 0 ? manualHours : autoHours;
+                    // 該天每人津貼 → 乘 headcount = 該天總額
+                    const dayFatiguePerPerson = calcDayFatigueAmount(entry?.startTime || '', entry?.endTime || '');
+                    const dayTravelPerPerson = Math.floor(usedHours / 1.5) * 30;
+                    const dayOvernightPerPerson = i < item.nights! ? 300 : 0;
+                    const dayFatigueTotal = dayFatiguePerPerson * headcount;
+                    const dayTravelTotal = dayTravelPerPerson * headcount;
+                    const dayOvernightTotal = dayOvernightPerPerson * headcount;
+                    const daySubtotal = dayFatigueTotal + dayTravelTotal + dayOvernightTotal;
+                    const labelClass = isFirst
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : isLast
+                      ? 'bg-rose-100 text-rose-700'
+                      : 'bg-slate-100 text-slate-600';
+                    return (
+                      <tr key={i} className={`border-b border-slate-100 ${i % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'}`}>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <span className={`inline-block px-2 py-0.5 text-[11px] font-semibold rounded-full ${labelClass}`}>
+                            {dayLabel}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 font-mono whitespace-nowrap text-slate-700">
+                          {dateStr}
+                          <span className="text-slate-400 text-[11px] ml-1">({getWeekday(dateStr)})</span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-700">
+                          {entry?.startingPoint || <span className="text-slate-400 italic">(自動帶入)</span>}
+                        </td>
+                        <td className="px-3 py-2 font-mono whitespace-nowrap text-slate-700">{entry?.startTime || '--:--'}</td>
+                        <td className="px-3 py-2 font-mono whitespace-nowrap text-slate-700">{entry?.endTime || '--:--'}</td>
+                        <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
+                          <span className="text-slate-700 font-medium">{usedHours}h</span>
+                          {manualHours !== undefined && manualHours > 0 && (
+                            <span className="ml-1.5 inline-block px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 bg-amber-100 rounded">
+                              手動
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {dayDests.length > 0 ? (
+                            <ul className="space-y-0.5">
+                              {dayDests.map((d, j) => (
+                                <li key={j} className="text-slate-700">
+                                  {d.address}
+                                  <span className="text-slate-400 ml-1 text-[11px]">（{d.oneWayHours}h）</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <span className="text-slate-400 italic text-[11px]">(無 / 未開車)</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono whitespace-nowrap text-slate-800 border-l border-slate-200 bg-amber-50/30">
+                          {dayFatigueTotal > 0 ? formatCurrency(dayFatigueTotal) : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono whitespace-nowrap text-slate-800 bg-sky-50/30">
+                          {dayTravelTotal > 0 ? formatCurrency(dayTravelTotal) : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono whitespace-nowrap text-slate-800 bg-violet-50/30">
+                          {dayOvernightTotal > 0 ? formatCurrency(dayOvernightTotal) : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono whitespace-nowrap font-bold text-blue-700 bg-blue-50/40">
+                          {daySubtotal > 0 ? formatCurrency(daySubtotal) : <span className="text-slate-300">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {/* 合計列：對照 row 既有的疲勞/車程/跨日 應該完全一致 */}
+                  <tr className="border-t-2 border-blue-300 bg-blue-50 font-semibold">
+                    <td className="px-3 py-2" colSpan={5}>
+                      <span className="text-slate-600">總計</span>
+                      <span className="ml-2 text-[11px] text-slate-400 font-normal">（對照右上方欄位金額）</span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap text-slate-700">
+                      {item.dayEntries!.reduce((sum, e, i) => {
+                        const dDests = (item.destinations || []).filter(d => (d.dayIndex ?? 0) === i);
+                        const aHrs = dDests.reduce((h, d) => h + (d.oneWayHours || 0), 0);
+                        const mHrs = e?.drivingHours;
+                        const used = mHrs !== undefined && mHrs > 0 ? mHrs : aHrs;
+                        return sum + used;
+                      }, 0)}h
+                    </td>
+                    <td className="px-3 py-2"></td>
+                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap border-l border-slate-200 bg-amber-100/50 text-slate-900">
+                      {formatCurrency(item.fatigueAllowanceTotal)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap bg-sky-100/50 text-slate-900">
+                      {formatCurrency(item.travelAllowanceTotal)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap bg-violet-100/50 text-slate-900">
+                      {formatCurrency(item.overnightAllowanceTotal)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono whitespace-nowrap font-bold text-blue-700 bg-blue-100/60">
+                      {formatCurrency(item.grandTotal)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          /* 單日明細 */
+          <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+            <div className="flex items-center gap-1.5 px-4 py-2.5 bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200">
+              <Clock className="w-4 h-4 text-slate-600" />
+              <span className="text-sm font-semibold text-slate-700">當日資訊</span>
+            </div>
+            <div className="p-4 space-y-3 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <div className="text-xs text-slate-500 mb-0.5">日期</div>
+                  <div className="font-mono font-medium text-slate-800">
+                    {item.date}
+                    <span className="text-slate-400 text-[11px] ml-1">({getWeekday(item.date)})</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 mb-0.5">出發時間</div>
+                  <div className="font-mono font-medium text-slate-800">{item.startTime || '--:--'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 mb-0.5">結束時間</div>
+                  <div className="font-mono font-medium text-slate-800">{item.endTime || '--:--'}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 mb-0.5">單程行駛</div>
+                  <div className="font-mono font-medium text-slate-800">
+                    {item.effectiveOneWayHours ?? item.oneWayHours ?? 0}h
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-0.5">目的地</div>
+                {item.destinations && item.destinations.length > 0 ? (
+                  <ul className="space-y-0.5">
+                    {item.destinations.map((d, i) => (
+                      <li key={i} className="text-slate-800">
+                        {d.address}
+                        <span className="text-slate-400 ml-1 text-xs">（單程 {d.oneWayHours}h）</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-slate-700">{item.destination || <span className="text-slate-400 italic">(無)</span>}</div>
+                )}
+              </div>
+              {/* 金額明細 (per-day = 整筆 since single-day) */}
+              <div className="grid grid-cols-4 gap-2 pt-3 border-t border-slate-100">
+                <div className="text-right">
+                  <div className="text-[11px] text-slate-500">疲勞</div>
+                  <div className="font-mono text-slate-800">{formatCurrency(item.fatigueAllowanceTotal)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[11px] text-slate-500">車程</div>
+                  <div className="font-mono text-slate-800">{formatCurrency(item.travelAllowanceTotal)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[11px] text-slate-500">過夜</div>
+                  <div className="font-mono text-slate-800">{formatCurrency(item.overnightAllowanceTotal)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[11px] text-blue-700 font-medium">合計</div>
+                  <div className="font-mono font-bold text-blue-700">{formatCurrency(item.grandTotal)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 金額明細：4 張 stat 卡 */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white rounded-lg border border-amber-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-amber-700 font-medium mb-1">
+              <AlertCircle className="w-3.5 h-3.5" />
+              疲勞津貼總額
+            </div>
+            <div className="text-lg font-bold font-mono text-slate-800">
+              {formatCurrency(item.fatigueAllowanceTotal)}
+            </div>
+          </div>
+          <div className="bg-white rounded-lg border border-sky-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-sky-700 font-medium mb-1">
+              <Car className="w-3.5 h-3.5" />
+              車程津貼總額
+            </div>
+            <div className="text-lg font-bold font-mono text-slate-800">
+              {formatCurrency(item.travelAllowanceTotal)}
+            </div>
+          </div>
+          <div className="bg-white rounded-lg border border-violet-100 px-4 py-3 shadow-sm">
+            <div className="flex items-center gap-1.5 text-xs text-violet-700 font-medium mb-1">
+              <Moon className="w-3.5 h-3.5" />
+              過夜津貼總額
+            </div>
+            <div className="text-lg font-bold font-mono text-slate-800">
+              {formatCurrency(item.overnightAllowanceTotal)}
+            </div>
+          </div>
+          <div className="bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg px-4 py-3 shadow-sm text-white">
+            <div className="flex items-center gap-1.5 text-xs text-blue-100 font-medium mb-1">
+              <Users className="w-3.5 h-3.5" />
+              每人均分
+            </div>
+            <div className="text-lg font-bold font-mono">
+              {formatCurrency(item.grandTotal / headcount)}
+            </div>
+            <div className="text-[10px] text-blue-100 mt-0.5">
+              共 {headcount} 人 / 總額 {formatCurrency(item.grandTotal)}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-10">
@@ -1856,7 +2200,8 @@ export default function App() {
                 </span>
               </div>
 
-              <div className="overflow-x-auto">
+              {/* 桌面版表格（≥md） */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
@@ -1878,12 +2223,20 @@ export default function App() {
                     ) : (
                       filteredMyHistory.map((item) => {
                         const isSubmitter = item.submitterId === currentUser.id;
+                        const isMultiDay = !!(item.nights && item.nights > 0);
                         return (
                           <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
                             <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                               {formatTimestamp(item.timestamp)}
                             </td>
-                            <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
+                            <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">
+                              {item.date}
+                              {isMultiDay && (
+                                <div className="mt-1 inline-block px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded">
+                                  {item.nights! + 1}天{item.nights}夜
+                                </div>
+                              )}
+                            </td>
                             <td className="px-4 py-3">
                               <div className="font-medium text-slate-800">
                                 {item.applicants?.join(', ') || 'N/A'}
@@ -1924,6 +2277,100 @@ export default function App() {
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              {/* 手機版卡片（<md）— 同仁多用手機操作 */}
+              <div className="md:hidden space-y-3">
+                {filteredMyHistory.length === 0 ? (
+                  <div className="text-center text-slate-400 text-sm py-8">
+                    {myHistory.length === 0 ? '尚無申請資料' : '找不到符合條件的紀錄'}
+                  </div>
+                ) : (
+                  filteredMyHistory.map((item) => {
+                    const isSubmitter = item.submitterId === currentUser.id;
+                    const isMultiDay = !!(item.nights && item.nights > 0);
+                    const endDate = isMultiDay ? addDays(item.date, item.nights!) : null;
+                    return (
+                      <div
+                        key={item.id}
+                        className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm"
+                      >
+                        {/* Top: 日期 + 身份 badge */}
+                        <div className="flex justify-between items-start mb-2">
+                          <div>
+                            <div className="font-bold text-slate-900 font-mono text-base">
+                              {item.date}
+                              {isMultiDay && (
+                                <span className="text-slate-400 mx-1">~</span>
+                              )}
+                              {isMultiDay && (
+                                <span className="font-mono">{endDate!.slice(5)}</span>
+                              )}
+                            </div>
+                            {isMultiDay && (
+                              <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded-full">
+                                {item.nights! + 1}天{item.nights}夜
+                              </span>
+                            )}
+                          </div>
+                          {isSubmitter ? (
+                            <span className="inline-block px-2 py-1 text-[10px] font-semibold text-green-700 bg-green-100 rounded-full whitespace-nowrap">
+                              我提交的
+                            </span>
+                          ) : (
+                            <span className="inline-block px-2 py-1 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded-full whitespace-nowrap">
+                              參與出差
+                            </span>
+                          )}
+                        </div>
+
+                        {/* 出差人員 */}
+                        <div className="text-sm text-slate-700 mb-1">
+                          <Users className="inline w-3.5 h-3.5 text-slate-400 mr-1 -mt-0.5" />
+                          {item.applicants?.join('、') || 'N/A'}
+                        </div>
+
+                        {/* 地點 */}
+                        <div className="text-sm text-slate-700 mb-1">
+                          <MapPin className="inline w-3.5 h-3.5 text-slate-400 mr-1 -mt-0.5" />
+                          {item.destinations
+                            ? item.destinations.map((d: any) => d.address).join(' → ')
+                            : item.destination || '(無)'}
+                        </div>
+
+                        {/* 事由 */}
+                        {item.reason && (
+                          <div className="text-xs text-slate-500 mb-2 ml-4">
+                            事由：{item.reason}
+                          </div>
+                        )}
+
+                        {/* Bottom: 金額 + 編輯 */}
+                        <div className="flex justify-between items-end pt-2 border-t border-slate-100">
+                          <div>
+                            <div className="text-[10px] text-slate-400">提交時間</div>
+                            <div className="text-[11px] text-slate-500">{formatTimestamp(item.timestamp)}</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] text-slate-400">總金額</div>
+                            <div className="text-xl font-bold text-blue-600 font-mono leading-none">
+                              {formatCurrency(item.grandTotal)}
+                            </div>
+                          </div>
+                        </div>
+                        {isSubmitter && (
+                          <button
+                            type="button"
+                            onClick={() => handleEditRecord(item)}
+                            className="mt-2 w-full py-1.5 text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors border border-blue-200"
+                          >
+                            ✏️ 編輯這筆紀錄
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -2041,12 +2488,15 @@ export default function App() {
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-slate-700 uppercase bg-slate-50 border-b border-slate-200">
                     <tr>
+                      <th className="px-2 py-3 text-center whitespace-nowrap w-8"></th>
                       <th className="px-2 py-3 text-center whitespace-nowrap w-10">刪除</th>
                       <th className="px-4 py-3 whitespace-nowrap">提交時間</th>
                       <th className="px-4 py-3 whitespace-nowrap">提交人</th>
                       <th className="px-4 py-3 whitespace-nowrap">出差日期</th>
                       <th className="px-4 py-3 whitespace-nowrap">出差人員</th>
                       <th className="px-4 py-3 whitespace-nowrap">地點</th>
+                      <th className="px-4 py-3 whitespace-nowrap">出發時間</th>
+                      <th className="px-4 py-3 whitespace-nowrap">結束時間</th>
                       <th className="px-4 py-3 text-right whitespace-nowrap">疲勞</th>
                       <th className="px-4 py-3 text-right whitespace-nowrap">車程</th>
                       <th className="px-4 py-3 text-right whitespace-nowrap">跨日</th>
@@ -2057,65 +2507,112 @@ export default function App() {
                   <tbody>
                     {filteredAdminHistory.length === 0 ? (
                       <tr>
-                        <td colSpan={11} className="px-4 py-8 text-center text-slate-400">
+                        <td colSpan={14} className="px-4 py-8 text-center text-slate-400">
                           {history.length === 0 ? '目前尚無申請資料' : '找不到符合條件的紀錄'}
                         </td>
                       </tr>
                     ) : (
-                      filteredAdminHistory.map((item) => (
-                        <tr key={item.id} className="bg-white border-b hover:bg-slate-50">
-                          <td className="px-2 py-3 text-center">
-                            <button
-                              onClick={() => handleDeleteRecord(item)}
-                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="刪除此筆紀錄"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
-                          <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
-                            {formatTimestamp(item.timestamp)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                             <div className="font-medium text-slate-900">{item.submitterName || '未知'}</div>
-                             <div className="text-xs text-slate-400">{item.submitterId}</div>
-                          </td>
-                          <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">{item.date}</td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium text-slate-800">
-                              {item.applicants?.join(', ') || 'N/A'}
-                            </div>
-                            <div className="text-xs text-slate-400">共 {item.passengers} 人</div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="font-medium">
-                              {item.destinations
-                                ? item.destinations.map((d: any) => d.address).join(' → ')
-                                : item.destination}
-                            </div>
-                            <div className="text-xs text-slate-400">{item.reason}</div>
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono">
-                            {formatCurrency(item.fatigueAllowanceTotal)}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono">
-                            {formatCurrency(item.travelAllowanceTotal)}
-                          </td>
-                          <td className="px-4 py-3 text-right font-mono">
-                            {formatCurrency(item.overnightAllowanceTotal)}
-                          </td>
-                          <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
-                            {formatCurrency(item.grandTotal)}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            {item.eligibleForLateStart && (
-                              <span className="inline-block px-2 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
-                                延後上班
-                              </span>
+                      filteredAdminHistory.map((item) => {
+                        const rowKey = item.id || `${item.submitterId}-${item.date}-${item.timestamp}`;
+                        const isExpanded = expandedAdminRows.has(rowKey);
+                        const tripTimes = getTripTimes(item);
+                        const isMultiDay = !!(item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0);
+                        return (
+                          <Fragment key={rowKey}>
+                            <tr className="bg-white border-b hover:bg-slate-50">
+                              <td className="px-2 py-3 text-center">
+                                <button
+                                  onClick={() => toggleAdminRow(rowKey)}
+                                  className={`p-1.5 rounded-lg transition-all duration-200 ${
+                                    isExpanded
+                                      ? 'text-blue-600 bg-blue-50'
+                                      : 'text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+                                  }`}
+                                  title={isExpanded ? '收起明細' : '展開明細'}
+                                  aria-expanded={isExpanded}
+                                >
+                                  <ChevronRight
+                                    className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`}
+                                  />
+                                </button>
+                              </td>
+                              <td className="px-2 py-3 text-center">
+                                <button
+                                  onClick={() => handleDeleteRecord(item)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  title="刪除此筆紀錄"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                              <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
+                                {formatTimestamp(item.timestamp)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                <div className="font-medium text-slate-900">{item.submitterName || '未知'}</div>
+                                <div className="text-xs text-slate-400">{item.submitterId}</div>
+                              </td>
+                              <td className="px-4 py-3 font-medium text-slate-900 whitespace-nowrap">
+                                <div>{item.date}</div>
+                                {isMultiDay && (
+                                  <div className="mt-1 flex items-center gap-1">
+                                    <span className="text-xs text-slate-400 font-mono">~{addDays(item.date, item.nights!).slice(5)}</span>
+                                    <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded">
+                                      {item.nights! + 1}天{item.nights}夜
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="font-medium text-slate-800">
+                                  {item.applicants?.join(', ') || 'N/A'}
+                                </div>
+                                <div className="text-xs text-slate-400">共 {item.passengers} 人</div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="font-medium">
+                                  {item.destinations
+                                    ? item.destinations.map((d: any) => d.address).join(' → ')
+                                    : item.destination}
+                                </div>
+                                <div className="text-xs text-slate-400">{item.reason}</div>
+                              </td>
+                              <td className="px-4 py-3 text-xs whitespace-nowrap font-mono text-slate-700">
+                                {tripTimes.start}
+                              </td>
+                              <td className="px-4 py-3 text-xs whitespace-nowrap font-mono text-slate-700">
+                                {tripTimes.end}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(item.fatigueAllowanceTotal)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(item.travelAllowanceTotal)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-mono">
+                                {formatCurrency(item.overnightAllowanceTotal)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
+                                {formatCurrency(item.grandTotal)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                {item.eligibleForLateStart && (
+                                  <span className="inline-block px-2 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
+                                    延後上班
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                            {isExpanded && (
+                              <tr className="bg-gradient-to-b from-blue-50/60 to-slate-50/40 border-b-2 border-blue-200">
+                                <td colSpan={14} className="px-6 py-5">
+                                  <AdminRecordDetail item={item} />
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                        </tr>
-                      ))
+                          </Fragment>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
