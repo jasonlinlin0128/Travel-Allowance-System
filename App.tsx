@@ -29,7 +29,8 @@ import {
   Loader2,
   Download,
   Calendar,
-  ChevronRight
+  ChevronRight,
+  RotateCcw
 } from 'lucide-react';
 
 // Removed direct import of @google/generative-ai to avoid bundling issues on Vercel.
@@ -48,7 +49,6 @@ const {
   query,
   orderBy,
   serverTimestamp,
-  deleteDoc,
   doc,
   updateDoc
 } = firestore as any;
@@ -172,6 +172,9 @@ export default function App() {
   const [adminFilterMode, setAdminFilterMode] = useState<'all' | 'year' | 'month' | 'day'>('all');
   const [adminFilterValue, setAdminFilterValue] = useState('');
   const [adminFilterKeyword, setAdminFilterKeyword] = useState('');
+
+  // Admin: 是否顯示已刪除紀錄（軟刪除稽核）
+  const [showDeletedRecords, setShowDeletedRecords] = useState(false);
 
   // Admin: 哪幾筆紀錄目前展開明細（多筆可同時展開以利比對）
   const [expandedAdminRows, setExpandedAdminRows] = useState<Set<string>>(new Set());
@@ -740,11 +743,12 @@ export default function App() {
       return;
     }
 
-    // 重複登打偵測：申請人重疊 + 日期區間 overlap（編輯時自動排除自己）
+    // 重複登打偵測：申請人重疊 + 日期區間 overlap（編輯時自動排除自己 + 已刪除不算）
     const trimmedApplicants = formData.applicants.map(a => a.trim()).filter(Boolean);
+    const activeHistory = history.filter(r => !r.deletedAt);
     const matches = findDuplicateRecords(
       { applicants: trimmedApplicants, date: formData.date, nights: formData.nights || 0 },
-      history,
+      activeHistory,
       editingRecordId,
     );
     if (matches.length > 0) {
@@ -963,9 +967,10 @@ export default function App() {
     const year = parseInt(yearStr);
     const month = parseInt(monthStr);
 
-    // Filter records for the selected month
+    // Filter records for the selected month（已刪除紀錄不出現在月報）
     const monthRecords = history.filter(item => {
       if (!item.date) return false;
+      if (item.deletedAt) return false;  // 軟刪除排除
       const [y, m] = item.date.split('-').map(Number);
       return y === year && m === month;
     });
@@ -1238,20 +1243,40 @@ export default function App() {
   };
 
   // --- Delete Record ---
+  // 軟刪除（M4）：用 prompt 一次取得「是否刪除 + 選填原因」
+  // - 按取消 = 完全放棄刪除
+  // - 按確定（不填字） = 刪除但無原因
+  // - 按確定（填字）   = 刪除並記原因
   const handleDeleteRecord = async (record: TravelRequest) => {
     const label = `${record.date} - ${record.submitterName || '未知'} - ${record.applicants?.join(', ') || 'N/A'}`;
-    if (!window.confirm(`確定要刪除這筆紀錄嗎？\n\n${label}\n總計：${formatCurrency(record.grandTotal)}`)) {
-      return;
-    }
+    const reason = window.prompt(
+      `確定要刪除這筆紀錄嗎？（軟刪除，可隨時還原）\n\n${label}\n總計：${formatCurrency(record.grandTotal)}\n\n刪除原因（選填，可留空）：`,
+      ''
+    );
+    if (reason === null) return;  // 取消：完全放棄
+    if (!currentUser) return;     // 防呆：理論上 admin 已登入
 
     try {
+      const deletionFields: any = {
+        deletedBy: currentUser.id,
+        deletedByName: currentUser.name,
+        deletedReason: reason || '',
+      };
       if (isDemoMode) {
-        const updated = history.filter(item => item.id !== record.id);
+        const nowIso = new Date().toISOString();
+        const updated = history.map(item =>
+          item.id === record.id
+            ? { ...item, ...deletionFields, deletedAt: nowIso }
+            : item
+        );
         setHistory(updated);
         localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updated));
       } else {
-        await deleteDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', record.id));
-        // Firestore onSnapshot will automatically update the history state
+        await updateDoc(
+          doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', record.id),
+          { ...deletionFields, deletedAt: serverTimestamp() }
+        );
+        // Firestore onSnapshot 會自動更新 history state
       }
     } catch (error) {
       console.error('刪除失敗:', error);
@@ -1259,16 +1284,49 @@ export default function App() {
     }
   };
 
-  // 後台稽核：每筆紀錄找其他疑似重複的（自己 vs 全部，排除自己）
+  // 還原已刪除紀錄：把 deletion 欄位設回 null（避免 FieldValue.delete 複雜化）
+  const handleRestoreRecord = async (record: TravelRequest) => {
+    if (!record.id) return;
+    if (!window.confirm(
+      `確定要還原這筆紀錄嗎？\n\n${record.date} - ${record.submitterName || '未知'}\n總計：${formatCurrency(record.grandTotal)}`
+    )) return;
+
+    try {
+      const restoreFields = {
+        deletedAt: null,
+        deletedBy: null,
+        deletedByName: null,
+        deletedReason: null,
+      };
+      if (isDemoMode) {
+        const updated = history.map(item =>
+          item.id === record.id ? { ...item, ...restoreFields } : item
+        );
+        setHistory(updated);
+        localStorage.setItem('travel_allowance_demo_data', JSON.stringify(updated));
+      } else {
+        await updateDoc(
+          doc(db, 'artifacts', APP_ID, 'public', 'data', 'travel_allowances', record.id),
+          restoreFields
+        );
+      }
+    } catch (error) {
+      console.error('還原失敗:', error);
+      alert('還原失敗，請稍後再試');
+    }
+  };
+
+  // 後台稽核：每筆紀錄找其他疑似重複的（自己 vs 全部，排除自己 + 排除已刪除）
   // 用 record.id 當 key；如果有 match → 該 row 標 ⚠️ 疑似重複 pill
   // 注意：useMemo 必須在所有 early return 之前呼叫，避免 hooks order 違規造成 React crash
   const adminDuplicateMap = useMemo(() => {
+    const activeHistory = history.filter(r => !r.deletedAt);  // 已刪除不算重複來源
     const map: Record<string, DuplicateMatch[]> = {};
-    for (const rec of history) {
+    for (const rec of activeHistory) {
       if (!rec.id || !rec.applicants || !rec.date) continue;
       const matches = findDuplicateRecords(
         { applicants: rec.applicants, date: rec.date, nights: rec.nights || 0 },
-        history,
+        activeHistory,
         rec.id,
       );
       if (matches.length > 0) map[rec.id] = matches;
@@ -1347,13 +1405,18 @@ export default function App() {
   }
 
   // --- Render: Main App ---
+  // 個人紀錄：永遠不顯示已刪除紀錄
   const myHistory = history.filter(item =>
-    item.submitterId === currentUser.id ||
-    item.applicants?.includes(currentUser.name)
+    !item.deletedAt &&
+    (item.submitterId === currentUser.id ||
+      item.applicants?.includes(currentUser.name))
   );
 
+  // 後台彙總表：依 showDeletedRecords toggle 決定是否含已刪除
+  const adminHistory = showDeletedRecords ? history : history.filter(item => !item.deletedAt);
+
   const filteredMyHistory = applyRecordFilter(myHistory, myFilterMode, myFilterValue, myFilterKeyword);
-  const filteredAdminHistory = applyRecordFilter(history, adminFilterMode, adminFilterValue, adminFilterKeyword);
+  const filteredAdminHistory = applyRecordFilter(adminHistory, adminFilterMode, adminFilterValue, adminFilterKeyword);
 
   // 取得星期幾單字（用於 Excel 與展開明細）
   const getWeekday = (ymd: string): string => {
@@ -1369,6 +1432,32 @@ export default function App() {
 
     return (
       <div className="space-y-5">
+        {/* 已刪除標記（軟刪除稽核） */}
+        {item.deletedAt && (
+          <div className="bg-rose-100 border border-rose-300 rounded-lg p-3">
+            <div className="flex items-start gap-2 mb-1">
+              <Trash2 className="w-4 h-4 text-rose-700 mt-0.5 flex-shrink-0" />
+              <div className="text-sm font-semibold text-rose-800">
+                此紀錄已被刪除（軟刪除，可從上方「還原」按鈕復原）
+              </div>
+            </div>
+            <div className="ml-6 text-xs text-rose-700 space-y-0.5">
+              <div>
+                刪除人：<span className="font-semibold">{item.deletedByName || '未知'}</span>
+                <span className="text-rose-500 ml-1">({item.deletedBy})</span>
+              </div>
+              <div>
+                刪除時間：<span className="font-mono">{formatTimestamp(item.deletedAt)}</span>
+              </div>
+              {item.deletedReason && (
+                <div>
+                  刪除原因：<span className="italic">「{item.deletedReason}」</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* 疑似重複警示 */}
         {dupMatches && dupMatches.length > 0 && (
           <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
@@ -2710,11 +2799,26 @@ export default function App() {
                     >✕</button>
                   )}
                 </div>
+                {/* 顯示已刪除 toggle（軟刪除稽核） */}
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer whitespace-nowrap select-none">
+                  <input
+                    type="checkbox"
+                    checked={showDeletedRecords}
+                    onChange={(e) => setShowDeletedRecords(e.target.checked)}
+                    className="cursor-pointer"
+                  />
+                  顯示已刪除
+                  {showDeletedRecords && history.some(r => r.deletedAt) && (
+                    <span className="inline-block px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 bg-rose-100 rounded">
+                      {history.filter(r => r.deletedAt).length} 筆
+                    </span>
+                  )}
+                </label>
               </div>
 
               <div className="flex justify-between items-center mb-4">
                 <span className="text-sm text-slate-500">
-                  顯示 {filteredAdminHistory.length} / {history.length} 筆
+                  顯示 {filteredAdminHistory.length} / {adminHistory.length} 筆
                 </span>
                 <div className="text-right">
                   <div className="text-xs text-slate-500">篩選結果總金額</div>
@@ -2759,9 +2863,16 @@ export default function App() {
                         const isMultiDay = !!(item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0);
                         const dupMatches = (item.id && adminDuplicateMap[item.id]) || [];
                         const hasDup = dupMatches.length > 0;
+                        const isDeleted = !!item.deletedAt;
+                        // Row 底色：已刪除 > 重複 > 一般白底；已刪除整行 opacity 半透明
+                        const rowBg = isDeleted
+                          ? 'bg-rose-50/40 opacity-70'
+                          : hasDup
+                          ? 'bg-amber-50/30'
+                          : 'bg-white';
                         return (
                           <Fragment key={rowKey}>
-                            <tr className={`border-b hover:bg-slate-50 ${hasDup ? 'bg-amber-50/30' : 'bg-white'}`}>
+                            <tr className={`border-b hover:bg-slate-50 ${rowBg}`}>
                               <td className="px-2 py-3 text-center">
                                 <button
                                   onClick={() => toggleAdminRow(rowKey)}
@@ -2779,13 +2890,23 @@ export default function App() {
                                 </button>
                               </td>
                               <td className="px-2 py-3 text-center">
-                                <button
-                                  onClick={() => handleDeleteRecord(item)}
-                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                  title="刪除此筆紀錄"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
+                                {isDeleted ? (
+                                  <button
+                                    onClick={() => handleRestoreRecord(item)}
+                                    className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                    title="還原此筆紀錄"
+                                  >
+                                    <RotateCcw className="w-4 h-4" />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleDeleteRecord(item)}
+                                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="刪除此筆紀錄（軟刪除，可還原）"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                                 {formatTimestamp(item.timestamp)}
@@ -2838,12 +2959,20 @@ export default function App() {
                                 {formatCurrency(item.grandTotal)}
                               </td>
                               <td className="px-4 py-3 text-center space-y-1">
+                                {isDeleted && (
+                                  <span
+                                    className="inline-block px-2 py-1 text-xs font-semibold text-rose-700 bg-rose-200 rounded-full whitespace-nowrap cursor-help"
+                                    title={`刪除人：${item.deletedByName || ''}（${item.deletedBy || ''}）${item.deletedReason ? `\n原因：${item.deletedReason}` : ''}`}
+                                  >
+                                    🗑 已刪除
+                                  </span>
+                                )}
                                 {item.eligibleForLateStart && (
                                   <span className="inline-block px-2 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
                                     延後上班
                                   </span>
                                 )}
-                                {hasDup && (
+                                {hasDup && !isDeleted && (
                                   <span
                                     className="inline-block px-2 py-1 text-xs font-semibold text-rose-700 bg-rose-100 rounded-full whitespace-nowrap cursor-help"
                                     title={`與 ${dupMatches.length} 筆紀錄日期區間 + 申請人有重疊。展開明細可看詳情。`}

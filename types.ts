@@ -64,6 +64,15 @@ export interface TravelRequest {
   allowedRestTime: number;
 
   timestamp?: any;
+
+  // 軟刪除稽核欄位（M4）
+  // - deletedAt 有值 = 已刪除（active query 會過濾掉）
+  // - deletedAt = null / undefined = 仍存在（既有紀錄沒這些欄位也算 active）
+  // - 還原 = 把 deletedAt 設為 null（不用 FieldValue.delete 比較簡單）
+  deletedAt?: any | null;       // Firestore Timestamp 或 null
+  deletedBy?: string | null;    // 員工 ID
+  deletedByName?: string | null;// 員工姓名（顯示用）
+  deletedReason?: string | null;
 }
 
 export interface CalculationResult {
