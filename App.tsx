@@ -79,6 +79,67 @@ const calcDayFatigueAmount = (startTime: string, endTime: string): number => {
   return f;
 };
 
+// 重複登打偵測：找出 history 中與 candidate 有「申請人重疊 + 日期區間 overlap」的紀錄
+// 用於：(a) 提交時擋（excludeId = editingRecordId），(c) 後台逐筆掃自己 vs 其他
+export interface DuplicateMatch {
+  record: TravelRequestLike;
+  overlappingApplicants: string[];
+  overlapStart: string; // YYYY-MM-DD
+  overlapEnd: string;   // YYYY-MM-DD
+}
+type TravelRequestLike = {
+  id?: string;
+  submitterId?: string;
+  submitterName?: string;
+  applicants?: string[];
+  date?: string;
+  nights?: number;
+  destinations?: { address: string; oneWayHours?: number; dayIndex?: number }[];
+  destination?: string;
+  reason?: string;
+  [k: string]: any;
+};
+const findDuplicateRecords = (
+  candidate: { applicants: string[]; date: string; nights: number },
+  history: TravelRequestLike[],
+  excludeId?: string | null,
+): DuplicateMatch[] => {
+  if (!candidate.applicants || candidate.applicants.length === 0) return [];
+  if (!candidate.date) return [];
+
+  const candStart = candidate.date;
+  const candEnd = addDays(candidate.date, candidate.nights || 0);
+  const candApplicants = new Set(
+    candidate.applicants.map(a => a.trim()).filter(Boolean)
+  );
+  if (candApplicants.size === 0) return [];
+
+  const matches: DuplicateMatch[] = [];
+  for (const rec of history) {
+    if (excludeId && rec.id === excludeId) continue;       // 編輯豁免
+    if (!rec.date || !rec.applicants || rec.applicants.length === 0) continue;
+
+    // 申請人重疊
+    const overlapping = rec.applicants
+      .map(a => a.trim())
+      .filter(a => a && candApplicants.has(a));
+    if (overlapping.length === 0) continue;
+
+    // 日期區間 overlap：[a1,a2] 與 [b1,b2] 相交 ⇔ a1 ≤ b2 且 b1 ≤ a2
+    const recStart = rec.date;
+    const recEnd = addDays(rec.date, rec.nights || 0);
+    if (candStart > recEnd || recStart > candEnd) continue;
+
+    matches.push({
+      record: rec,
+      overlappingApplicants: overlapping,
+      overlapStart: candStart > recStart ? candStart : recStart,
+      overlapEnd: candEnd < recEnd ? candEnd : recEnd,
+    });
+  }
+  return matches;
+};
+
 export default function App() {
   // Auth State
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
@@ -122,6 +183,10 @@ export default function App() {
       return next;
     });
   };
+
+  // 重複登打偵測 modal 狀態
+  const [duplicateWarning, setDuplicateWarning] = useState<DuplicateMatch[] | null>(null);
+  const [duplicateConfirmCheck, setDuplicateConfirmCheck] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<{
@@ -621,16 +686,36 @@ export default function App() {
     setActiveTab('form');
     window.scrollTo(0, 0);
   };
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Form 提交入口：驗證 + 偵測重複，無重複才直接 performSubmit；有重複先彈 modal
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!firebaseUser && !isDemoMode) return;
     if (!currentUser) return; // Should not happen if UI is correct
-    
+
     if (formData.applicants.some(name => !name.trim())) {
       alert("請填寫所有出差人員姓名");
       return;
     }
 
+    // 重複登打偵測：申請人重疊 + 日期區間 overlap（編輯時自動排除自己）
+    const trimmedApplicants = formData.applicants.map(a => a.trim()).filter(Boolean);
+    const matches = findDuplicateRecords(
+      { applicants: trimmedApplicants, date: formData.date, nights: formData.nights || 0 },
+      history,
+      editingRecordId,
+    );
+    if (matches.length > 0) {
+      setDuplicateWarning(matches);
+      setDuplicateConfirmCheck(false);
+      return; // 等使用者在 modal 確認再 performSubmit
+    }
+
+    void performSubmit();
+  };
+
+  // 真正寫入 Firestore / localStorage 的程序，可從 handleSubmit 或 modal 確認鈕呼叫
+  const performSubmit = async () => {
+    if (!currentUser) return;
     setIsSubmitting(true);
 
     try {
@@ -735,7 +820,11 @@ export default function App() {
         nights: 0,
         dayEntries: [],
       }));
-      
+
+      // 清掉重複警告 modal 的狀態（即便 modal 不在開啟中也安全清）
+      setDuplicateWarning(null);
+      setDuplicateConfirmCheck(false);
+
       // Stay on form tab after submission
       window.scrollTo(0, 0);
     } catch (error) {
@@ -1123,6 +1212,23 @@ export default function App() {
     }
   };
 
+  // 後台稽核：每筆紀錄找其他疑似重複的（自己 vs 全部，排除自己）
+  // 用 record.id 當 key；如果有 match → 該 row 標 ⚠️ 疑似重複 pill
+  // 注意：useMemo 必須在所有 early return 之前呼叫，避免 hooks order 違規造成 React crash
+  const adminDuplicateMap = useMemo(() => {
+    const map: Record<string, DuplicateMatch[]> = {};
+    for (const rec of history) {
+      if (!rec.id || !rec.applicants || !rec.date) continue;
+      const matches = findDuplicateRecords(
+        { applicants: rec.applicants, date: rec.date, nights: rec.nights || 0 },
+        history,
+        rec.id,
+      );
+      if (matches.length > 0) map[rec.id] = matches;
+    }
+    return map;
+  }, [history]);
+
   // --- Render: Login Screen ---
   if (!currentUser) {
     return (
@@ -1210,12 +1316,58 @@ export default function App() {
   };
 
   // 後台展開明細卡片：總務點 chevron 後顯示完整出差資訊以利覆核
-  const AdminRecordDetail = ({ item }: { item: TravelRequest }) => {
+  const AdminRecordDetail = ({ item, dupMatches }: { item: TravelRequest; dupMatches?: DuplicateMatch[] }) => {
     const isMultiDay = !!(item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0);
     const headcount = item.passengers || item.applicants?.length || 1;
 
     return (
       <div className="space-y-5">
+        {/* 疑似重複警示 */}
+        {dupMatches && dupMatches.length > 0 && (
+          <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
+            <div className="flex items-start gap-2 mb-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm font-semibold text-rose-700">
+                偵測到 {dupMatches.length} 筆紀錄與此筆有日期 + 申請人重疊（可能重複登打）
+              </div>
+            </div>
+            <ul className="space-y-1.5 text-xs">
+              {dupMatches.map((m, i) => (
+                <li key={i} className="bg-white rounded border border-rose-100 px-2 py-1.5">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-mono text-slate-700">
+                      {m.record.date}
+                      {(m.record.nights || 0) > 0 && <> ~ {addDays(m.record.date!, m.record.nights || 0)}</>}
+                    </span>
+                    <span className="text-slate-400 text-[11px]">
+                      提交人：{m.record.submitterName}（{m.record.submitterId}）
+                    </span>
+                  </div>
+                  <div className="text-slate-600">
+                    申請人：
+                    {m.record.applicants?.map((a, j) => (
+                      <span
+                        key={j}
+                        className={
+                          m.overlappingApplicants.includes(a)
+                            ? 'font-semibold text-rose-700 bg-rose-100 px-1 rounded mr-1'
+                            : 'text-slate-500 mr-1'
+                        }
+                      >
+                        {a}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="text-rose-600 mt-0.5">
+                    重疊：{m.overlappingApplicants.join('、')} 在 <span className="font-mono">{m.overlapStart}</span>
+                    {m.overlapStart !== m.overlapEnd && <> ~ <span className="font-mono">{m.overlapEnd}</span></>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* 基本資訊：3 張 icon 卡 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="bg-white rounded-lg border border-blue-100 px-4 py-3 shadow-sm">
@@ -2555,9 +2707,11 @@ export default function App() {
                         const isExpanded = expandedAdminRows.has(rowKey);
                         const tripTimes = getTripTimes(item);
                         const isMultiDay = !!(item.nights && item.nights > 0 && item.dayEntries && item.dayEntries.length > 0);
+                        const dupMatches = (item.id && adminDuplicateMap[item.id]) || [];
+                        const hasDup = dupMatches.length > 0;
                         return (
                           <Fragment key={rowKey}>
-                            <tr className="bg-white border-b hover:bg-slate-50">
+                            <tr className={`border-b hover:bg-slate-50 ${hasDup ? 'bg-amber-50/30' : 'bg-white'}`}>
                               <td className="px-2 py-3 text-center">
                                 <button
                                   onClick={() => toggleAdminRow(rowKey)}
@@ -2633,10 +2787,18 @@ export default function App() {
                               <td className="px-4 py-3 text-right font-bold text-blue-600 font-mono">
                                 {formatCurrency(item.grandTotal)}
                               </td>
-                              <td className="px-4 py-3 text-center">
+                              <td className="px-4 py-3 text-center space-y-1">
                                 {item.eligibleForLateStart && (
                                   <span className="inline-block px-2 py-1 text-xs font-semibold text-amber-700 bg-amber-100 rounded-full whitespace-nowrap">
                                     延後上班
+                                  </span>
+                                )}
+                                {hasDup && (
+                                  <span
+                                    className="inline-block px-2 py-1 text-xs font-semibold text-rose-700 bg-rose-100 rounded-full whitespace-nowrap cursor-help"
+                                    title={`與 ${dupMatches.length} 筆紀錄日期區間 + 申請人有重疊。展開明細可看詳情。`}
+                                  >
+                                    ⚠ 疑似重複 ×{dupMatches.length}
                                   </span>
                                 )}
                               </td>
@@ -2644,7 +2806,7 @@ export default function App() {
                             {isExpanded && (
                               <tr className="bg-gradient-to-b from-blue-50/60 to-slate-50/40 border-b-2 border-blue-200">
                                 <td colSpan={14} className="px-6 py-5">
-                                  <AdminRecordDetail item={item} />
+                                  <AdminRecordDetail item={item} dupMatches={dupMatches} />
                                 </td>
                               </tr>
                             )}
@@ -2660,6 +2822,123 @@ export default function App() {
         )}
 
       </main>
+
+      {/* 重複登打警告 modal */}
+      {duplicateWarning && duplicateWarning.length > 0 && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => {
+            // 點背景關閉
+            setDuplicateWarning(null);
+            setDuplicateConfirmCheck(false);
+          }}
+        >
+          <div
+            className="bg-white rounded-xl max-w-2xl w-full p-6 shadow-2xl max-h-[85vh] flex flex-col"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="bg-amber-100 rounded-full p-2 flex-shrink-0">
+                <AlertCircle className="w-6 h-6 text-amber-600" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-slate-900">偵測到可能的重複申請</h3>
+                <p className="text-sm text-slate-600 mt-1">
+                  以下 {duplicateWarning.length} 筆既有紀錄與你這次提交的<strong>日期區間</strong>與<strong>申請人</strong>有重疊：
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2 mb-4 overflow-y-auto flex-1 pr-1">
+              {duplicateWarning.map((m, i) => {
+                const recEnd = addDays(m.record.date!, m.record.nights || 0);
+                const isMultiDay = (m.record.nights || 0) > 0;
+                return (
+                  <div key={i} className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="font-mono font-medium text-slate-800">
+                        {m.record.date}
+                        {isMultiDay && <> ~ {recEnd}</>}
+                        {isMultiDay && (
+                          <span className="ml-2 inline-block px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded">
+                            {(m.record.nights || 0) + 1}天{m.record.nights}夜
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        提交人：{m.record.submitterName || '未知'}
+                        <span className="text-slate-400 ml-1">({m.record.submitterId})</span>
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-700 mb-1">
+                      <span className="text-slate-500">申請人：</span>
+                      {m.record.applicants?.map((a, j) => {
+                        const isOverlap = m.overlappingApplicants.includes(a);
+                        return (
+                          <span
+                            key={j}
+                            className={isOverlap ? 'font-semibold text-amber-800 bg-amber-200 px-1 rounded mr-1' : 'text-slate-600 mr-1'}
+                          >
+                            {a}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <div className="text-xs text-amber-700 font-medium border-t border-amber-200 pt-1 mt-1">
+                      ⚠ 重疊：{m.overlappingApplicants.join('、')}
+                      {' '}在 <span className="font-mono">{m.overlapStart}</span>
+                      {m.overlapStart !== m.overlapEnd && <> ~ <span className="font-mono">{m.overlapEnd}</span></>}
+                    </div>
+                    {m.record.reason && (
+                      <div className="text-[11px] text-slate-500 mt-1">
+                        事由：{m.record.reason}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <label className="flex items-start gap-2 mb-4 text-sm cursor-pointer p-2 -mx-2 hover:bg-slate-50 rounded">
+              <input
+                type="checkbox"
+                checked={duplicateConfirmCheck}
+                onChange={e => setDuplicateConfirmCheck(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-slate-700">
+                我已確認此筆並非重複登打，仍要提交
+                <span className="block text-xs text-slate-400 mt-0.5">
+                  （勾選後才能按下「確認提交」）
+                </span>
+              </span>
+            </label>
+
+            <div className="flex justify-end gap-2 border-t border-slate-200 pt-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setDuplicateWarning(null);
+                  setDuplicateConfirmCheck(false);
+                }}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+              >
+                取消，回去檢查
+              </button>
+              <button
+                type="button"
+                disabled={!duplicateConfirmCheck || isSubmitting}
+                onClick={() => void performSubmit()}
+                className="px-4 py-2 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-lg transition-colors"
+              >
+                {isSubmitting ? '提交中...' : '確認提交'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
