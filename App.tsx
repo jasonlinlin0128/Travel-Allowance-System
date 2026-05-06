@@ -768,28 +768,87 @@ export default function App() {
       return;
     }
 
-    // Build per-employee-per-date data
+    // ===== Per-day allowance expansion =====
+    // 多日出差紀錄按 dayEntries 攤到對應日期；單日紀錄整批費用在 record.date
+    // 過夜津貼方案 X：「當晚住=當天計」→ 第 0..nights-1 天各 $300，最後一天回程 0
+    // 跨月份方案 X：4/29-5/2 紀錄整筆歸 4 月匯出，但 5/1、5/2 仍以實際日期顯示
+    // 高鐵情境：destinations 不填或 0h → 車程自動 0，疲勞/過夜照 dayEntries / nights 計
+    const calcDayFatigueAmount = (startTime: string, endTime: string): number => {
+      if (!startTime || !endTime) return 0;
+      const [sh, sm] = startTime.split(':').map(Number);
+      const [eh, em] = endTime.split(':').map(Number);
+      const startDec = sh + sm / 60;
+      const endDec = eh + em / 60;
+      let f = 0;
+      if (startDec <= 5) f += Math.floor((8 - startDec) * 2) / 2 * 200;
+      if (endDec > 21) f += Math.floor((endDec - 21) * 2) / 2 * 200;
+      return f;
+    };
+
+    const expandRecordPerDay = (record: TravelRequest): { date: string; fatigue: number; travel: number; overnight: number }[] => {
+      const headcount = record.passengers || record.applicants?.length || 1;
+
+      // 單日紀錄（沒過夜）：整批費用就在 record.date 那天
+      if (!record.nights || record.nights === 0 || !record.dayEntries || record.dayEntries.length === 0) {
+        return [{
+          date: record.date,
+          fatigue: record.perPersonFatigue ?? (record.fatigueAllowanceTotal / headcount),
+          travel: record.perPersonTravel ?? (record.travelAllowanceTotal / headcount),
+          overnight: 0,
+        }];
+      }
+
+      // 多日紀錄：逐天展開
+      const result: { date: string; fatigue: number; travel: number; overnight: number }[] = [];
+      for (let i = 0; i <= record.nights; i++) {
+        const dateKey = addDays(record.date, i);
+        const entry = record.dayEntries[i];
+
+        let fatigue = 0;
+        let travel = 0;
+
+        if (entry) {
+          // 該日疲勞津貼：每天 startTime/endTime 各自算
+          fatigue = calcDayFatigueAmount(entry.startTime, entry.endTime);
+
+          // 該日車程津貼：drivingHours 手動覆蓋優先，否則加總當天 destinations
+          let dayHours: number;
+          if (entry.drivingHours !== undefined && entry.drivingHours > 0) {
+            dayHours = entry.drivingHours;
+          } else {
+            const dayDests = (record.destinations || []).filter(d => (d.dayIndex ?? 0) === i);
+            dayHours = dayDests.reduce((h, d) => h + (d.oneWayHours || 0), 0);
+          }
+          travel = Math.floor(dayHours / 1.5) * 30;
+        }
+
+        // 過夜津貼（方案 X：當晚住=當天計）
+        const overnight = i < record.nights ? 300 : 0;
+
+        result.push({ date: dateKey, fatigue, travel, overnight });
+      }
+      return result;
+    };
+
+    // Build per-employee-per-date data with per-day expansion
     const dateMap: Record<string, Record<string, { fatigue: number; travel: number; overnight: number }>> = {};
     const employeeSet = new Set<string>();
 
     for (const record of monthRecords) {
-      const dateKey = record.date;
-      if (!dateMap[dateKey]) dateMap[dateKey] = {};
-
       const applicants = record.applicants || [];
-      const headcount = record.passengers || applicants.length || 1;
-      const perFatigue = record.perPersonFatigue ?? (record.fatigueAllowanceTotal / headcount);
-      const perTravel = record.perPersonTravel ?? (record.travelAllowanceTotal / headcount);
-      const perOvernight = record.perPersonOvernight ?? (record.overnightAllowanceTotal / headcount);
+      const dailyEntries = expandRecordPerDay(record);
 
-      for (const name of applicants) {
-        employeeSet.add(name);
-        if (!dateMap[dateKey][name]) {
-          dateMap[dateKey][name] = { fatigue: 0, travel: 0, overnight: 0 };
+      for (const day of dailyEntries) {
+        if (!dateMap[day.date]) dateMap[day.date] = {};
+        for (const name of applicants) {
+          employeeSet.add(name);
+          if (!dateMap[day.date][name]) {
+            dateMap[day.date][name] = { fatigue: 0, travel: 0, overnight: 0 };
+          }
+          dateMap[day.date][name].fatigue += day.fatigue;
+          dateMap[day.date][name].travel += day.travel;
+          dateMap[day.date][name].overnight += day.overnight;
         }
-        dateMap[dateKey][name].fatigue += perFatigue;
-        dateMap[dateKey][name].travel += perTravel;
-        dateMap[dateKey][name].overnight += perOvernight;
       }
     }
 
@@ -797,20 +856,24 @@ export default function App() {
     const dates = Object.keys(dateMap).sort();
 
     // ====== Sheet 1: 總表 ======
+    // 版面：每個員工佔 4 欄（疲勞/車程/過夜/個人小計）；員工名橫跨 4 欄合併儲存格
+    // 第一欄「日期」、最後欄「當日合計」皆縱向合併兩列
+    // 有紀錄的格子一律顯示數字（包含 0），完全沒紀錄的日期/員工才留空
     const summaryRows: (string | number)[][] = [];
+    const COLS_PER_EMP = 4; // 疲勞 + 車程 + 過夜 + 小計
 
-    // Row 1: Employee names header
+    // Row 1: 員工名 header（合併儲存格用，員工名放第一格，其餘 3 格空白）
     const header1: (string | number)[] = ['日期'];
     for (const emp of employees) {
-      header1.push(emp, '', '');
+      header1.push(emp, '', '', '');
     }
     header1.push('當日合計');
     summaryRows.push(header1);
 
-    // Row 2: Sub-column headers
+    // Row 2: 子欄位 header
     const header2: (string | number)[] = [''];
     for (let i = 0; i < employees.length; i++) {
-      header2.push('出差津貼', '車程加給', '跨日津貼');
+      header2.push('出差津貼', '車程加給', '跨日津貼', '小計');
     }
     header2.push('');
     summaryRows.push(header2);
@@ -822,7 +885,7 @@ export default function App() {
     }
     let grandTotal = 0;
 
-    // Data rows
+    // Data rows（每人 4 欄含個人當日小計）
     for (const dateKey of dates) {
       const [, m, d] = dateKey.split('-').map(Number);
       const dateLabel = `${m}/${d}`;
@@ -832,18 +895,20 @@ export default function App() {
       for (const emp of employees) {
         const data = dateMap[dateKey][emp];
         if (data) {
-          row.push(
-            data.fatigue ? Math.round(data.fatigue) : '',
-            data.travel ? Math.round(data.travel) : '',
-            data.overnight ? Math.round(data.overnight) : ''
-          );
           const personDay = data.fatigue + data.travel + data.overnight;
+          // 有紀錄就一律顯示（包含 0），讓中間天的 0 看得到
+          row.push(
+            Math.round(data.fatigue),
+            Math.round(data.travel),
+            Math.round(data.overnight),
+            Math.round(personDay)
+          );
           dayTotal += personDay;
           empTotals[emp].fatigue += data.fatigue;
           empTotals[emp].travel += data.travel;
           empTotals[emp].overnight += data.overnight;
         } else {
-          row.push('', '', '');
+          row.push('', '', '', '');
         }
       }
       row.push(dayTotal ? Math.round(dayTotal) : '');
@@ -851,14 +916,16 @@ export default function App() {
       summaryRows.push(row);
     }
 
-    // Totals row
+    // 合計 row：每人 3 項分開合計 + 個人月度小計
     const totalRow: (string | number)[] = ['合計'];
     for (const emp of employees) {
       const t = empTotals[emp];
+      const empMonthTotal = t.fatigue + t.travel + t.overnight;
       totalRow.push(
         t.fatigue ? Math.round(t.fatigue) : '',
         t.travel ? Math.round(t.travel) : '',
-        t.overnight ? Math.round(t.overnight) : ''
+        t.overnight ? Math.round(t.overnight) : '',
+        empMonthTotal ? Math.round(empMonthTotal) : ''
       );
     }
     totalRow.push(Math.round(grandTotal));
@@ -876,6 +943,30 @@ export default function App() {
 
     // Add summary sheet
     const summaryWs = XLSX.utils.aoa_to_sheet(summaryRows);
+
+    // ===== 合併儲存格 =====
+    // 1. 第一欄「日期」縱向跨兩列 (row 0-1, col 0)
+    // 2. 每個員工名橫向跨 4 欄 (row 0)
+    // 3. 最後欄「當日合計」縱向跨兩列 (row 0-1, last col)
+    const merges: { s: { r: number; c: number }; e: { r: number; c: number } }[] = [];
+    const lastCol = header1.length - 1;
+    merges.push({ s: { r: 0, c: 0 }, e: { r: 1, c: 0 } });
+    merges.push({ s: { r: 0, c: lastCol }, e: { r: 1, c: lastCol } });
+    for (let e = 0; e < employees.length; e++) {
+      const startCol = 1 + e * COLS_PER_EMP;
+      const endCol = startCol + COLS_PER_EMP - 1;
+      merges.push({ s: { r: 0, c: startCol }, e: { r: 0, c: endCol } });
+    }
+    summaryWs['!merges'] = merges;
+
+    // ===== 欄寬 =====
+    const cols: { wch: number }[] = [{ wch: 8 }]; // 日期
+    for (let i = 0; i < employees.length; i++) {
+      cols.push({ wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 9 });
+    }
+    cols.push({ wch: 10 }); // 當日合計
+    summaryWs['!cols'] = cols;
+
     XLSX.utils.book_append_sheet(wb, summaryWs, '總表');
 
     // ====== Per-employee sheets ======
@@ -891,19 +982,26 @@ export default function App() {
     for (let d = 1; d <= daysInMonth; d++) {
       allDates.push(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
     }
+    // 跨月紀錄展開出的次月日期（例如 4/29-5/2 紀錄在 4 月匯出會多 5/1、5/2 列）
+    for (const dateKey of Object.keys(dateMap)) {
+      if (!allDates.includes(dateKey)) {
+        allDates.push(dateKey);
+      }
+    }
+    allDates.sort();
 
     for (const empName of employees) {
       const empId = findEmpId(empName);
       const sheetRows: (string | number)[][] = [];
 
-      // Header row: employee code (name) | 出差津貼 | 車程加給 | 跨日津貼
-      sheetRows.push([`${empId}(${empName})`, '出差津貼', '車程加給', '跨日津貼']);
+      // Header row: employee code (name) | 出差津貼 | 車程加給 | 跨日津貼 | 小計
+      sheetRows.push([`${empId}(${empName})`, '出差津貼', '車程加給', '跨日津貼', '小計']);
 
       let empFatigueTotal = 0;
       let empTravelTotal = 0;
       let empOvernightTotal = 0;
 
-      // One row per day of the month
+      // One row per day（含跨月攤出來的次月日）
       for (const dateKey of allDates) {
         const [, m, d] = dateKey.split('-').map(Number);
         const dateLabel = `${m}/${d}`;
@@ -913,26 +1011,30 @@ export default function App() {
           const f = Math.round(data.fatigue);
           const t = Math.round(data.travel);
           const o = Math.round(data.overnight);
-          sheetRows.push([dateLabel, f || '', t || '', o || '']);
+          const sub = f + t + o;
+          // 有紀錄就一律顯示（包含 0），讓中間天的 0 看得到
+          sheetRows.push([dateLabel, f, t, o, sub]);
           empFatigueTotal += data.fatigue;
           empTravelTotal += data.travel;
           empOvernightTotal += data.overnight;
         } else {
-          sheetRows.push([dateLabel, '', '', '']);
+          sheetRows.push([dateLabel, '', '', '', '']);
         }
       }
 
-      // Totals row
+      // Totals row（最後加個人月度小計）
+      const empGrand = empFatigueTotal + empTravelTotal + empOvernightTotal;
       sheetRows.push([
         '合計',
         empFatigueTotal ? Math.round(empFatigueTotal) : '',
         empTravelTotal ? Math.round(empTravelTotal) : '',
-        empOvernightTotal ? Math.round(empOvernightTotal) : ''
+        empOvernightTotal ? Math.round(empOvernightTotal) : '',
+        empGrand ? Math.round(empGrand) : ''
       ]);
 
       const empWs = XLSX.utils.aoa_to_sheet(sheetRows);
       // Set column widths for readability
-      empWs['!cols'] = [{ wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
+      empWs['!cols'] = [{ wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
       XLSX.utils.book_append_sheet(wb, empWs, empName);
     }
 
